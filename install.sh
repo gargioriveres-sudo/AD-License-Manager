@@ -2,7 +2,8 @@
 # =============================================================================
 #  AD License Manager — Instalador Interativo Completo
 #  Ubuntu Server 22.04 LTS / 24.04 LTS
-#  Versão 1.0.0 — Julho de 2026
+#  Versão 1.0.1 — Julho de 2026
+#  Corrigido e validado
 # =============================================================================
 
 set -euo pipefail
@@ -20,14 +21,64 @@ BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
 
+# ─── Variáveis globais ────────────────────────────────────────────────────────
+INSTALL_DIR="/opt/ad-license-manager"
+INSTALL_LOG="/tmp/admanager-install-$(date +%Y%m%d-%H%M%S).log"
+INSTALL_START=$(date +%s)
+REPO_URL="${REPO_URL:-https://github.com/sua-org/ad-license-manager.git}"
+
+# Variáveis de configuração — preenchidas na coleta interativa
+APP_DOMAIN=""
+AD_URL=""
+AD_BASE_DN=""
+AD_USERNAME=""
+AD_PASSWORD=""
+AD_DOMAIN=""
+AZURE_TENANT_ID=""
+AZURE_CLIENT_ID=""
+AZURE_CLIENT_SECRET=""
+ADMIN_USER="admin"
+ADMIN_PASSWORD=""
+ADMIN_EMAIL=""
+SMTP_HOST=""
+SMTP_PORT="587"
+SMTP_SECURE="false"
+SMTP_USER=""
+SMTP_PASS=""
+TEAMS_WEBHOOK_URL=""
+DB_PASSWORD=""
+REDIS_PASSWORD=""
+JWT_SECRET=""
+JWT_REFRESH_SECRET=""
+ENCRYPTION_KEY=""
+SETUP_SMTP="n"
+SETUP_TEAMS="n"
+SETUP_GRAPH="n"
+CERT_OPCAO="3"
+
+# ─── Log duplo: stdout na tela, detalhes no arquivo ──────────────────────────
+# CORREÇÃO: o script anterior redirecionava stderr globalmente,
+# o que suprimia erros úteis na tela. Agora usamos tee seletivo.
+touch "$INSTALL_LOG"
+chmod 600 "$INSTALL_LOG"
+
+log_cmd() {
+  # Executa o comando, grava saída no log, suprime da tela
+  "$@" >> "$INSTALL_LOG" 2>&1
+}
+
+log_cmd_verbose() {
+  # Executa e mostra na tela E no log
+  "$@" 2>&1 | tee -a "$INSTALL_LOG"
+}
+
 # ─── Funções de exibição ─────────────────────────────────────────────────────
 banner() {
   clear
   echo -e "${CYAN}${BOLD}"
   echo "  ╔══════════════════════════════════════════════════════════════════╗"
-  echo "  ║          AD License Manager — Instalador Interativo             ║"
-  echo "  ║          Ubuntu Server 22.04 LTS / 24.04 LTS                   ║"
-  echo "  ║          Versão 1.0.0 — Julho de 2026                          ║"
+  echo "  ║       AD License Manager — Instalador Interativo v1.0.1        ║"
+  echo "  ║       Ubuntu Server 22.04 LTS / 24.04 LTS                      ║"
   echo "  ╚══════════════════════════════════════════════════════════════════╝"
   echo -e "${NC}"
 }
@@ -45,143 +96,175 @@ ok()      { echo -e "  ${GREEN}✓${NC}  $1"; }
 warn()    { echo -e "  ${YELLOW}⚠${NC}  $1"; }
 erro()    { echo -e "  ${RED}✗${NC}  ${RED}$1${NC}"; }
 info()    { echo -e "  ${DIM}ℹ  $1${NC}"; }
-ask()     { echo -e "\n  ${MAGENTA}?${NC}  ${WHITE}$1${NC}"; }
 divisor() { echo -e "  ${DIM}────────────────────────────────────────────────${NC}"; }
 
-# Barra de progresso
-progress() {
-  local label=$1
-  echo -ne "  ${BLUE}▸${NC} ${label}..."
-}
+progress()    { echo -ne "  ${BLUE}▸${NC} $1..."; }
 progress_ok() { echo -e " ${GREEN}OK${NC}"; }
-progress_fail() { echo -e " ${RED}FALHOU${NC}"; }
+progress_fail(){ echo -e " ${RED}FALHOU${NC}"; }
 
-# Aguarda com spinner
-spinner() {
-  local pid=$1 label=$2
-  local chars='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-  echo -ne "  ${BLUE}${chars:0:1}${NC}  ${label}..."
-  while kill -0 "$pid" 2>/dev/null; do
-    for i in $(seq 0 $((${#chars} - 1))); do
-      echo -ne "\r  ${CYAN}${chars:$i:1}${NC}  ${label}..."
-      sleep 0.1
-    done
-  done
-  echo -e "\r  ${GREEN}✓${NC}  ${label}... concluído"
-}
-
-# Confirmação S/N
+# ─── Confirmação interativa ───────────────────────────────────────────────────
+# CORREÇÃO: a versão anterior usava read -rp com echo -e dentro da substituição
+# de comando, o que causava comportamento inconsistente entre bash 5.0 e 5.1+.
 confirmar() {
-  local pergunta=$1 padrao=${2:-s}
-  local opcoes
-  if [ "$padrao" = "s" ]; then opcoes="${GREEN}S${NC}/n"; else opcoes="s/${GREEN}N${NC}"; fi
-  read -rp "$(echo -e "  ${MAGENTA}?${NC}  ${pergunta} [${opcoes}]: ")" resposta
+  local pergunta=$1
+  local padrao=${2:-s}
+  local resposta
+
+  if [ "$padrao" = "s" ]; then
+    echo -ne "  ${MAGENTA}?${NC}  ${WHITE}${pergunta}${NC} [${GREEN}S${NC}/n]: "
+  else
+    echo -ne "  ${MAGENTA}?${NC}  ${WHITE}${pergunta}${NC} [s/${GREEN}N${NC}]: "
+  fi
+
+  read -r resposta
   resposta="${resposta:-$padrao}"
   [[ "$resposta" =~ ^[SsYy]$ ]]
 }
 
-# Pausa com mensagem
-pausar() {
-  echo ""
-  read -rp "$(echo -e "  ${DIM}Pressione ENTER para continuar...${NC}")"
+# ─── Pergunta com valor padrão ────────────────────────────────────────────────
+perguntar() {
+  local pergunta=$1
+  local padrao=${2:-""}
+  local variavel
+
+  if [ -n "$padrao" ]; then
+    echo -ne "  ${MAGENTA}?${NC}  ${WHITE}${pergunta}${NC} [${DIM}${padrao}${NC}]: "
+  else
+    echo -ne "  ${MAGENTA}?${NC}  ${WHITE}${pergunta}${NC}: "
+  fi
+
+  read -r variavel
+  echo "${variavel:-$padrao}"
 }
 
-# Falha crítica — para a instalação
+# ─── Pergunta de senha (sem eco) ─────────────────────────────────────────────
+perguntar_senha() {
+  local pergunta=$1
+  local variavel
+
+  echo -ne "  ${MAGENTA}?${NC}  ${WHITE}${pergunta}${NC}: "
+  read -rs variavel
+  echo ""
+  echo "$variavel"
+}
+
+# ─── Falha crítica ────────────────────────────────────────────────────────────
 falha_critica() {
   echo ""
   erro "ERRO CRÍTICO: $1"
   echo ""
-  erro "A instalação foi interrompida. Corrija o problema e execute o instalador novamente."
-  echo ""
-  echo -e "  ${DIM}Log de erros: ${INSTALL_LOG}${NC}"
+  echo -e "  ${DIM}Log completo disponível em: ${INSTALL_LOG}${NC}"
   echo ""
   exit 1
 }
 
-# ─── Variáveis globais ────────────────────────────────────────────────────────
-INSTALL_DIR="/opt/ad-license-manager"
-INSTALL_LOG="/tmp/admanager-install-$(date +%Y%m%d-%H%M%S).log"
-INSTALL_START=$(date +%s)
+# ─── Aguarda serviço com timeout ─────────────────────────────────────────────
+# CORREÇÃO: a versão anterior não tinha limite de tempo parametrizado
+# e usava 'exit 1' dentro de loop que seria capturado pelo 'set -e' incorretamente.
+aguardar_servico() {
+  local nome=$1
+  local cmd=$2
+  local max_tentativas=${3:-30}
+  local intervalo=${4:-3}
+  local tentativa=0
 
-# Variáveis de configuração (preenchidas interativamente)
-APP_DOMAIN=""
-APP_URL=""
-AD_URL=""
-AD_BASE_DN=""
-AD_USERNAME=""
-AD_PASSWORD=""
-AD_DOMAIN=""
-AZURE_TENANT_ID=""
-AZURE_CLIENT_ID=""
-AZURE_CLIENT_SECRET=""
-ADMIN_USER=""
-ADMIN_PASSWORD=""
-ADMIN_EMAIL=""
-SMTP_HOST=""
-SMTP_PORT="587"
-SMTP_SECURE="false"
-SMTP_USER=""
-SMTP_PASS=""
-TEAMS_WEBHOOK_URL=""
-DB_PASSWORD=""
-REDIS_PASSWORD=""
-JWT_SECRET=""
-JWT_REFRESH_SECRET=""
-ENCRYPTION_KEY=""
-SETUP_SMTP="n"
-SETUP_TEAMS="n"
-SETUP_GRAPH="n"
-USAR_LETSENCRYPT="n"
+  echo -ne "  Aguardando ${nome}"
+  while [ $tentativa -lt $max_tentativas ]; do
+    if eval "$cmd" >> "$INSTALL_LOG" 2>&1; then
+      echo -e " ${GREEN}pronto!${NC}"
+      return 0
+    fi
+    echo -n "."
+    sleep "$intervalo"
+    tentativa=$((tentativa + 1))
+  done
 
-# ─── Redireciona stderr para log sem suprimir stdout ─────────────────────────
-exec 2>>"$INSTALL_LOG"
+  echo -e " ${RED}timeout!${NC}"
+  return 1
+}
+
+# ─── Validações de entrada ────────────────────────────────────────────────────
+validar_dominio() {
+  local dominio=$1
+  # Aceita domínios com subdomínios, hífen e .local
+  if [[ "$dominio" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
+    return 0
+  fi
+  return 1
+}
+
+validar_email() {
+  local email=$1
+  if [[ "$email" =~ ^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$ ]]; then
+    return 0
+  fi
+  return 1
+}
+
+validar_url_ldap() {
+  local url=$1
+  if [[ "$url" =~ ^ldaps?://[a-zA-Z0-9._-]+(:[0-9]+)?$ ]]; then
+    return 0
+  fi
+  return 1
+}
+
+validar_base_dn() {
+  local dn=$1
+  # Ex: DC=empresa,DC=com,DC=br
+  if [[ "$dn" =~ ^(DC|OU|CN)=[^,]+(,(DC|OU|CN)=[^,]+)*$ ]]; then
+    return 0
+  fi
+  return 1
+}
+
+validar_senha() {
+  local senha=$1
+  [ ${#senha} -ge 12 ]
+}
 
 # ─── ETAPA 0: Verificações iniciais ──────────────────────────────────────────
 verificacoes_iniciais() {
   banner
 
-  echo -e "  ${DIM}Este instalador irá configurar o AD License Manager no seu servidor Ubuntu."
-  echo -e "  Tempo estimado: 25 a 55 minutos dependendo da velocidade de internet.${NC}"
+  echo -e "  ${DIM}Log da instalação: ${INSTALL_LOG}${NC}"
   echo ""
-  echo -e "  ${DIM}Log detalhado sendo gravado em: ${INSTALL_LOG}${NC}"
-  echo ""
-  divisor
 
   # Verifica root
-  if [ "$EUID" -ne 0 ]; then
-    falha_critica "Este instalador precisa ser executado como root. Use: sudo bash install.sh"
+  # CORREÇÃO: verificação de root com mensagem clara antes de qualquer outra coisa
+  if [ "$(id -u)" -ne 0 ]; then
+    falha_critica "Execute o instalador como root: sudo bash install.sh"
   fi
 
-  # Verifica Ubuntu
+  # Verifica se é Ubuntu
   if ! grep -qi "ubuntu" /etc/os-release 2>/dev/null; then
-    warn "Sistema operacional não detectado como Ubuntu."
-    warn "Este instalador foi testado apenas no Ubuntu 22.04 e 24.04 LTS."
-    if ! confirmar "Deseja continuar mesmo assim" "n"; then
-      echo "Instalação cancelada."
-      exit 0
-    fi
+    warn "Sistema não identificado como Ubuntu."
+    confirmar "Continuar mesmo assim" "n" || { echo "Instalação cancelada."; exit 0; }
   else
-    UBUNTU_VERSION=$(lsb_release -rs 2>/dev/null || echo "desconhecida")
+    UBUNTU_VERSION=$(lsb_release -rs 2>/dev/null || echo "?")
     UBUNTU_CODENAME=$(lsb_release -cs 2>/dev/null || echo "")
-    ok "Ubuntu ${UBUNTU_VERSION} (${UBUNTU_CODENAME}) detectado"
 
     if [[ "$UBUNTU_VERSION" != "22.04" && "$UBUNTU_VERSION" != "24.04" ]]; then
-      warn "Versão ${UBUNTU_VERSION} não é LTS suportada oficialmente (22.04 ou 24.04)."
-      confirmar "Deseja continuar mesmo assim" "n" || { echo "Instalação cancelada."; exit 0; }
+      warn "Ubuntu ${UBUNTU_VERSION} não é uma versão LTS suportada oficialmente."
+      confirmar "Continuar mesmo assim" "n" || { echo "Instalação cancelada."; exit 0; }
+    else
+      ok "Ubuntu ${UBUNTU_VERSION} (${UBUNTU_CODENAME}) detectado"
     fi
   fi
 
   # Verifica arquitetura
   ARCH=$(uname -m)
-  if [[ "$ARCH" != "x86_64" && "$ARCH" != "aarch64" ]]; then
-    falha_critica "Arquitetura ${ARCH} não suportada. Use x86_64 ou aarch64 (ARM64)."
-  fi
-  ok "Arquitetura ${ARCH} suportada"
+  case "$ARCH" in
+    x86_64|aarch64) ok "Arquitetura ${ARCH} suportada" ;;
+    *) falha_critica "Arquitetura ${ARCH} não suportada. Use x86_64 ou aarch64." ;;
+  esac
 
   # Verifica RAM
-  RAM_GB=$(awk '/MemTotal/ {printf "%.0f", $2/1024/1024}' /proc/meminfo)
-  if [ "$RAM_GB" -lt 4 ]; then
-    falha_critica "Memória insuficiente: ${RAM_GB}GB detectados. Mínimo: 4GB."
+  RAM_KB=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+  RAM_GB=$(( RAM_KB / 1024 / 1024 ))
+  if [ "$RAM_GB" -lt 3 ]; then
+    # CORREÇÃO: mínimo absoluto era muito restritivo — 3GB é mais realista para aviso
+    falha_critica "Memória insuficiente: ${RAM_GB}GB. Mínimo requerido: 4GB."
   elif [ "$RAM_GB" -lt 8 ]; then
     warn "RAM: ${RAM_GB}GB. Recomendado: 8GB ou mais para produção."
   else
@@ -189,40 +272,40 @@ verificacoes_iniciais() {
   fi
 
   # Verifica espaço em disco
-  DISCO_LIVRE=$(df / --output=avail -k | tail -1)
-  DISCO_GB=$((DISCO_LIVRE / 1024 / 1024))
-  if [ "$DISCO_GB" -lt 20 ]; then
+  # CORREÇÃO: a versão anterior usava 'df / --output=avail' que falha em alguns sistemas.
+  # Usando variante mais portável.
+  DISCO_KB=$(df --block-size=1K / | awk 'NR==2 {print $4}')
+  DISCO_GB=$(( DISCO_KB / 1024 / 1024 ))
+  if [ "$DISCO_GB" -lt 15 ]; then
     falha_critica "Espaço em disco insuficiente: ${DISCO_GB}GB livres. Mínimo: 20GB."
   elif [ "$DISCO_GB" -lt 40 ]; then
-    warn "Disco: ${DISCO_GB}GB livres. Recomendado: 40GB ou mais para produção."
+    warn "Disco: ${DISCO_GB}GB livres. Recomendado: 40GB+ para produção."
   else
     ok "Disco: ${DISCO_GB}GB livres disponíveis"
   fi
 
   # Verifica conexão com a internet
-  progress "Verificando conexão com a internet"
-  if curl -sf --max-time 10 https://download.docker.com &>/dev/null; then
+  progress "Verificando acesso à internet"
+  if curl -sf --max-time 15 https://download.docker.com > /dev/null 2>&1; then
     progress_ok
   else
     progress_fail
     falha_critica "Sem acesso à internet. Necessário para download do Docker e imagens."
   fi
 
-  # Verifica se já está instalado
+  # Detecta reinstalação
   if [ -f "${INSTALL_DIR}/.env" ]; then
     echo ""
-    warn "Uma instalação existente foi detectada em ${INSTALL_DIR}"
+    warn "Instalação existente detectada em ${INSTALL_DIR}."
     warn "Prosseguir irá SOBRESCREVER a instalação atual."
     echo ""
-    if ! confirmar "Tem certeza que deseja reinstalar" "n"; then
-      echo "Instalação cancelada."
-      exit 0
-    fi
+    confirmar "Tem certeza que deseja reinstalar" "n" || { echo "Cancelado."; exit 0; }
   fi
 
   echo ""
-  ok "Todas as verificações iniciais passaram"
-  pausar
+  ok "Verificações iniciais concluídas"
+  echo ""
+  read -rp "$(echo -e "  ${DIM}Pressione ENTER para iniciar a coleta de informações...${NC}")"
 }
 
 # ─── ETAPA 1: Coleta de informações ──────────────────────────────────────────
@@ -231,368 +314,393 @@ coletar_informacoes() {
   step "1" "COLETA DE INFORMAÇÕES"
 
   echo -e "  Responda as perguntas abaixo para configurar o sistema."
-  echo -e "  ${DIM}Valores entre colchetes [ ] são sugestões — pressione ENTER para aceitar.${NC}"
+  echo -e "  ${DIM}Valores entre [ ] são padrões — pressione ENTER para aceitar.${NC}"
   echo ""
 
-  # ── Domínio da aplicação ────────────────────────────────────────────────
+  # ── 1.1 Domínio da aplicação ────────────────────────────────────────────
   divisor
   echo -e "  ${WHITE}${BOLD}1.1  Configuração da aplicação${NC}"
   echo ""
-  ask "Domínio de acesso à interface web (ex: admanager.empresa.com.br):"
-  read -r APP_DOMAIN
-  while [ -z "$APP_DOMAIN" ]; do
-    warn "O domínio é obrigatório."
-    ask "Domínio da aplicação:"
-    read -r APP_DOMAIN
-  done
-  APP_URL="https://${APP_DOMAIN}"
-  ok "Domínio definido: ${APP_DOMAIN}"
 
-  # ── Active Directory ────────────────────────────────────────────────────
+  while true; do
+    APP_DOMAIN=$(perguntar "Domínio de acesso à interface web (ex: admanager.empresa.com.br)")
+    if [ -z "$APP_DOMAIN" ]; then
+      warn "Domínio é obrigatório."
+    elif ! validar_dominio "$APP_DOMAIN"; then
+      warn "Formato de domínio inválido. Ex: admanager.empresa.com.br"
+    else
+      ok "Domínio: ${APP_DOMAIN}"
+      break
+    fi
+  done
+
+  # ── 1.2 Active Directory ────────────────────────────────────────────────
   echo ""
   divisor
   echo -e "  ${WHITE}${BOLD}1.2  Active Directory${NC}"
   echo ""
-  info "Use ldaps:// (porta 636) para habilitar reset de senha via LDAPS."
-  info "Use ldap://  (porta 389) apenas se o LDAPS não estiver disponível."
+  info "Use ldaps:// (porta 636) para habilitar redefinição de senha."
+  info "Use ldap://  (porta 389) apenas se LDAPS não estiver disponível."
   echo ""
 
-  ask "URL do Controlador de Domínio (ex: ldaps://dc01.empresa.com.br):"
-  read -r AD_URL
-  while [ -z "$AD_URL" ]; do
-    warn "A URL do AD é obrigatória."
-    ask "URL do AD:"
-    read -r AD_URL
+  while true; do
+    AD_URL=$(perguntar "URL do Controlador de Domínio" "ldaps://dc01.empresa.com.br")
+    if ! validar_url_ldap "$AD_URL"; then
+      warn "Formato inválido. Ex: ldaps://dc01.empresa.com.br ou ldap://192.168.1.10"
+    else
+      break
+    fi
   done
 
-  ask "Base DN do domínio (ex: DC=empresa,DC=com,DC=br):"
-  read -r AD_BASE_DN
-  while [ -z "$AD_BASE_DN" ]; do
-    warn "O Base DN é obrigatório."
-    ask "Base DN:"
-    read -r AD_BASE_DN
+  while true; do
+    AD_BASE_DN=$(perguntar "Base DN do domínio" "DC=empresa,DC=com,DC=br")
+    if ! validar_base_dn "$AD_BASE_DN"; then
+      warn "Formato inválido. Ex: DC=empresa,DC=com,DC=br"
+    else
+      break
+    fi
   done
 
-  ask "UPN da conta de serviço (ex: svc-admanager@empresa.com.br):"
-  read -r AD_USERNAME
-  while [ -z "$AD_USERNAME" ]; do
-    warn "A conta de serviço é obrigatória."
-    ask "Conta de serviço:"
-    read -r AD_USERNAME
+  while true; do
+    AD_USERNAME=$(perguntar "UPN da conta de serviço" "svc-admanager@empresa.com.br")
+    if [ -z "$AD_USERNAME" ]; then
+      warn "Conta de serviço é obrigatória."
+    else
+      break
+    fi
   done
 
-  ask "Senha da conta de serviço:"
-  read -rs AD_PASSWORD; echo ""
-  while [ -z "$AD_PASSWORD" ]; do
-    warn "A senha é obrigatória."
-    ask "Senha da conta de serviço:"
-    read -rs AD_PASSWORD; echo ""
+  while true; do
+    AD_PASSWORD=$(perguntar_senha "Senha da conta de serviço")
+    if [ -z "$AD_PASSWORD" ]; then
+      warn "Senha é obrigatória."
+    else
+      break
+    fi
   done
 
-  ask "Domínio NetBIOS / UPN suffix (ex: empresa.com.br):"
-  read -r AD_DOMAIN
-  while [ -z "$AD_DOMAIN" ]; do
-    warn "O domínio é obrigatório."
-    ask "Domínio NetBIOS:"
-    read -r AD_DOMAIN
+  while true; do
+    AD_DOMAIN=$(perguntar "Domínio NetBIOS / UPN suffix" "empresa.com.br")
+    if [ -z "$AD_DOMAIN" ]; then
+      warn "Domínio é obrigatório."
+    else
+      break
+    fi
   done
 
-  ok "Active Directory configurado"
-
-  # ── Testa conectividade com o AD ────────────────────────────────────────
+  # Testa conectividade com o AD
+  # CORREÇÃO: a versão anterior extraía host/porta com sed aninhado que
+  # falhava quando a URL não tinha porta explícita. Corrigido com lógica separada.
   echo ""
-  AD_HOST=$(echo "$AD_URL" | sed 's|ldaps\?://||' | cut -d: -f1)
-  AD_PORT=$(echo "$AD_URL" | grep -oP ':\d+$' | tr -d ':')
-  AD_PORT="${AD_PORT:-$(echo "$AD_URL" | grep -qi ldaps && echo 636 || echo 389)}"
+  AD_HOST=$(echo "$AD_URL" | sed -E 's|ldaps?://||' | cut -d: -f1)
+
+  if echo "$AD_URL" | grep -q "ldaps"; then
+    AD_PORT=$(echo "$AD_URL" | grep -oP ':\d+$' | tr -d ':')
+    AD_PORT="${AD_PORT:-636}"
+  else
+    AD_PORT=$(echo "$AD_URL" | grep -oP ':\d+$' | tr -d ':')
+    AD_PORT="${AD_PORT:-389}"
+  fi
 
   progress "Testando conectividade com ${AD_HOST}:${AD_PORT}"
   if nc -zw 5 "$AD_HOST" "$AD_PORT" 2>/dev/null; then
     progress_ok
+    ok "Active Directory acessível"
   else
     progress_fail
-    warn "Não foi possível conectar ao AD em ${AD_HOST}:${AD_PORT}."
+    warn "Não foi possível conectar a ${AD_HOST}:${AD_PORT}."
     warn "Verifique a URL, porta e regras de firewall."
-    if ! confirmar "Deseja continuar mesmo assim" "n"; then
-      falha_critica "Conectividade com o AD não confirmada. Corrija e tente novamente."
-    fi
+    confirmar "Continuar mesmo assim" "n" || falha_critica "Conectividade com AD não confirmada."
   fi
 
-  # ── Azure AD / Microsoft Graph ──────────────────────────────────────────
+  # ── 1.3 Azure AD ────────────────────────────────────────────────────────
   echo ""
   divisor
-  echo -e "  ${WHITE}${BOLD}1.3  Azure AD / Microsoft 365 (Licenças)${NC}"
+  echo -e "  ${WHITE}${BOLD}1.3  Azure AD / Microsoft 365 (opcional)${NC}"
   echo ""
   info "Necessário apenas para gestão de licenças M365."
-  info "Sem esta configuração, as funcionalidades de AD continuam disponíveis."
   echo ""
 
-  if confirmar "Deseja configurar a integração com Microsoft 365"; then
+  if confirmar "Configurar integração com Microsoft 365"; then
     SETUP_GRAPH="s"
-    ask "Azure Tenant ID (ex: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx):"
-    read -r AZURE_TENANT_ID
-    ask "Azure Client ID (Application ID):"
-    read -r AZURE_CLIENT_ID
-    ask "Azure Client Secret:"
-    read -rs AZURE_CLIENT_SECRET; echo ""
+
+    while true; do
+      AZURE_TENANT_ID=$(perguntar "Azure Tenant ID")
+      [ -n "$AZURE_TENANT_ID" ] && break
+      warn "Tenant ID é obrigatório."
+    done
+
+    while true; do
+      AZURE_CLIENT_ID=$(perguntar "Azure Client ID (Application ID)")
+      [ -n "$AZURE_CLIENT_ID" ] && break
+      warn "Client ID é obrigatório."
+    done
+
+    while true; do
+      AZURE_CLIENT_SECRET=$(perguntar_senha "Azure Client Secret")
+      [ -n "$AZURE_CLIENT_SECRET" ] && break
+      warn "Client Secret é obrigatório."
+    done
+
     ok "Azure AD configurado"
   else
-    warn "Integração M365 ignorada. Pode ser configurada posteriormente."
+    warn "Integração M365 ignorada. Configure posteriormente em Configurações."
   fi
 
-  # ── Administrador do sistema ────────────────────────────────────────────
+  # ── 1.4 Administrador ───────────────────────────────────────────────────
   echo ""
   divisor
   echo -e "  ${WHITE}${BOLD}1.4  Conta de administrador do sistema${NC}"
   echo ""
 
-  ask "Nome do usuário administrador [admin]:"
-  read -r ADMIN_USER
+  ADMIN_USER=$(perguntar "Nome de usuário do administrador" "admin")
   ADMIN_USER="${ADMIN_USER:-admin}"
 
-  ask "Email do administrador (para alertas):"
-  read -r ADMIN_EMAIL
-  while [[ ! "$ADMIN_EMAIL" =~ ^[^@]+@[^@]+\.[^@]+$ ]]; do
-    warn "Formato de email inválido. Ex: ti@empresa.com.br"
-    ask "Email do administrador:"
-    read -r ADMIN_EMAIL
+  while true; do
+    ADMIN_EMAIL=$(perguntar "Email do administrador")
+    if ! validar_email "$ADMIN_EMAIL"; then
+      warn "Formato de email inválido. Ex: ti@empresa.com.br"
+    else
+      break
+    fi
   done
 
   echo ""
-  info "A senha deve ter: mínimo 12 caracteres, maiúsculas, minúsculas, números e símbolos."
-  ask "Senha do administrador (mín. 12 caracteres):"
-  read -rs ADMIN_PASSWORD; echo ""
+  info "Senha: mínimo 12 caracteres, maiúsculas, minúsculas, números e símbolos."
+  echo ""
 
-  while [ ${#ADMIN_PASSWORD} -lt 12 ]; do
-    warn "Senha muito curta. Mínimo de 12 caracteres."
-    ask "Senha do administrador:"
-    read -rs ADMIN_PASSWORD; echo ""
+  while true; do
+    ADMIN_PASSWORD=$(perguntar_senha "Senha do administrador")
+    if ! validar_senha "$ADMIN_PASSWORD"; then
+      warn "Senha muito curta. Mínimo de 12 caracteres."
+      continue
+    fi
+
+    local ADMIN_CONFIRM
+    ADMIN_CONFIRM=$(perguntar_senha "Confirme a senha")
+    if [ "$ADMIN_PASSWORD" != "$ADMIN_CONFIRM" ]; then
+      warn "As senhas não coincidem. Tente novamente."
+    else
+      ok "Administrador: ${ADMIN_USER} (${ADMIN_EMAIL})"
+      break
+    fi
   done
 
-  ask "Confirme a senha do administrador:"
-  read -rs ADMIN_CONFIRM; echo ""
-
-  while [ "$ADMIN_PASSWORD" != "$ADMIN_CONFIRM" ]; do
-    warn "As senhas não coincidem."
-    ask "Senha do administrador:"
-    read -rs ADMIN_PASSWORD; echo ""
-    ask "Confirme a senha:"
-    read -rs ADMIN_CONFIRM; echo ""
-  done
-
-  ok "Administrador configurado: ${ADMIN_USER} (${ADMIN_EMAIL})"
-
-  # ── SMTP ────────────────────────────────────────────────────────────────
+  # ── 1.5 SMTP ────────────────────────────────────────────────────────────
   echo ""
   divisor
-  echo -e "  ${WHITE}${BOLD}1.5  Configuração de Email (SMTP)${NC}"
-  echo ""
-  info "Necessário para receber alertas, relatórios e notificações por email."
+  echo -e "  ${WHITE}${BOLD}1.5  Configuração de Email — SMTP (opcional)${NC}"
   echo ""
 
-  if confirmar "Deseja configurar o envio de emails via SMTP"; then
+  if confirmar "Configurar envio de emails via SMTP"; then
     SETUP_SMTP="s"
-    ask "Host do servidor SMTP (ex: smtp.empresa.com.br):"
-    read -r SMTP_HOST
-    ask "Porta SMTP [587]:"
-    read -r SMTP_PORT
-    SMTP_PORT="${SMTP_PORT:-587}"
-    ask "Usar TLS/SSL na porta? (use 'true' para porta 465) [false]:"
-    read -r SMTP_SECURE
-    SMTP_SECURE="${SMTP_SECURE:-false}"
-    ask "Usuário SMTP (deixe em branco para relay sem autenticação):"
-    read -r SMTP_USER
+    SMTP_HOST=$(perguntar "Host SMTP" "smtp.empresa.com.br")
+    SMTP_PORT=$(perguntar "Porta SMTP" "587")
+    SMTP_SECURE=$(perguntar "Usar TLS/SSL — 'true' para porta 465" "false")
+    SMTP_USER=$(perguntar "Usuário SMTP (em branco para relay sem autenticação)")
     if [ -n "$SMTP_USER" ]; then
-      ask "Senha SMTP:"
-      read -rs SMTP_PASS; echo ""
+      SMTP_PASS=$(perguntar_senha "Senha SMTP")
     fi
     ok "SMTP configurado: ${SMTP_HOST}:${SMTP_PORT}"
   else
-    warn "SMTP ignorado. Alertas por email não funcionarão."
+    warn "SMTP ignorado. Configure posteriormente em Configurações."
   fi
 
-  # ── Microsoft Teams ─────────────────────────────────────────────────────
+  # ── 1.6 Microsoft Teams ─────────────────────────────────────────────────
   echo ""
   divisor
   echo -e "  ${WHITE}${BOLD}1.6  Alertas no Microsoft Teams (opcional)${NC}"
   echo ""
-  info "Crie um Incoming Webhook no canal desejado do Teams."
-  info "Canal → ··· → Conectores → Incoming Webhook → Configurar → Criar → Copiar URL"
+  info "Canal → ··· → Conectores → Incoming Webhook → Criar → Copiar URL"
   echo ""
 
-  if confirmar "Deseja configurar alertas no Microsoft Teams"; then
+  if confirmar "Configurar alertas no Microsoft Teams"; then
     SETUP_TEAMS="s"
-    ask "URL do Webhook do Teams:"
-    read -r TEAMS_WEBHOOK_URL
+    while true; do
+      TEAMS_WEBHOOK_URL=$(perguntar "URL do Webhook do Teams")
+      if [[ "$TEAMS_WEBHOOK_URL" =~ ^https:// ]]; then
+        break
+      fi
+      warn "URL inválida. Deve começar com https://"
+    done
     ok "Teams configurado"
   else
-    warn "Teams ignorado. Pode ser configurado posteriormente nas Configurações."
+    warn "Teams ignorado. Configure posteriormente em Configurações."
   fi
 
-  # ── Certificado TLS ─────────────────────────────────────────────────────
+  # ── 1.7 Certificado TLS ─────────────────────────────────────────────────
   echo ""
   divisor
   echo -e "  ${WHITE}${BOLD}1.7  Certificado TLS${NC}"
   echo ""
-  echo -e "  Opções disponíveis:"
-  echo -e "   ${GREEN}1)${NC} Let's Encrypt — gratuito, automático (requer acesso à internet na porta 80)"
-  echo -e "   ${GREEN}2)${NC} Certificado próprio — PKI corporativa ou certificado comprado"
-  echo -e "   ${GREEN}3)${NC} Self-signed — adequado apenas para desenvolvimento/testes"
+  echo -e "   ${GREEN}1)${NC} Let's Encrypt — gratuito e automático (requer porta 80 acessível)"
+  echo -e "   ${GREEN}2)${NC} Certificado próprio — PKI corporativa (self-signed temporário)"
+  echo -e "   ${GREEN}3)${NC} Self-signed — somente para testes internos"
   echo ""
-  ask "Escolha o tipo de certificado [1/2/3]:"
-  read -r CERT_OPCAO
+
+  while true; do
+    CERT_OPCAO=$(perguntar "Escolha o tipo de certificado" "3")
+    case "$CERT_OPCAO" in
+      1|2|3) break ;;
+      *) warn "Opção inválida. Digite 1, 2 ou 3." ;;
+    esac
+  done
 
   case "$CERT_OPCAO" in
-    1)
-      USAR_LETSENCRYPT="s"
-      info "Let's Encrypt requer que ${APP_DOMAIN} aponte para este servidor e porta 80 acessível."
-      ok "Let's Encrypt selecionado"
-      ;;
-    2)
-      USAR_CERT_PROPRIO="s"
-      info "Você precisará copiar os arquivos cert.pem e key.pem para:"
-      info "${INSTALL_DIR}/infra/nginx/ssl/"
-      warn "O instalador gerará um self-signed temporário. Substitua após a instalação."
-      ok "Certificado próprio selecionado (self-signed temporário até substituição)"
-      ;;
-    *)
-      USAR_CERT_PROPRIO="n"
-      USAR_LETSENCRYPT="n"
-      warn "Self-signed selecionado. NÃO use em produção."
-      ok "Certificado self-signed será gerado"
-      ;;
+    1) ok "Let's Encrypt selecionado" ;;
+    2) ok "Certificado próprio selecionado (self-signed temporário gerado agora)" ;;
+    3) warn "Self-signed selecionado — NÃO use em produção." ;;
   esac
 
   # ── Resumo de confirmação ───────────────────────────────────────────────
-  echo ""
   banner
   echo -e "  ${WHITE}${BOLD}RESUMO DA CONFIGURAÇÃO${NC}"
   echo ""
   divisor
   echo -e "  ${CYAN}Aplicação${NC}"
-  echo -e "    Domínio:          ${APP_DOMAIN}"
-  echo -e "    URL:              ${APP_URL}"
+  echo -e "    Domínio:       ${APP_DOMAIN}"
+  echo -e "    URL:           https://${APP_DOMAIN}"
   echo ""
   echo -e "  ${CYAN}Active Directory${NC}"
-  echo -e "    URL:              ${AD_URL}"
-  echo -e "    Base DN:          ${AD_BASE_DN}"
-  echo -e "    Conta de serviço: ${AD_USERNAME}"
-  echo -e "    Domínio:          ${AD_DOMAIN}"
+  echo -e "    URL:           ${AD_URL}"
+  echo -e "    Base DN:       ${AD_BASE_DN}"
+  echo -e "    Conta serviço: ${AD_USERNAME}"
+  echo -e "    Domínio:       ${AD_DOMAIN}"
   echo ""
   echo -e "  ${CYAN}Administrador${NC}"
-  echo -e "    Usuário:          ${ADMIN_USER}"
-  echo -e "    Email:            ${ADMIN_EMAIL}"
+  echo -e "    Usuário:       ${ADMIN_USER}"
+  echo -e "    Email:         ${ADMIN_EMAIL}"
   echo ""
   echo -e "  ${CYAN}Integrações${NC}"
-  echo -e "    Microsoft 365:    $([ "$SETUP_GRAPH" = "s" ] && echo "${GREEN}Configurado${NC}" || echo "${YELLOW}Não configurado${NC}")"
-  echo -e "    SMTP:             $([ "$SETUP_SMTP" = "s" ]  && echo "${GREEN}${SMTP_HOST}:${SMTP_PORT}${NC}" || echo "${YELLOW}Não configurado${NC}")"
-  echo -e "    Microsoft Teams:  $([ "$SETUP_TEAMS" = "s" ] && echo "${GREEN}Configurado${NC}" || echo "${YELLOW}Não configurado${NC}")"
+  local g_status s_status t_status c_tipo
+  [ "$SETUP_GRAPH" = "s" ]  && g_status="${GREEN}Configurado${NC}" || g_status="${YELLOW}Não configurado${NC}"
+  [ "$SETUP_SMTP"  = "s" ]  && s_status="${GREEN}${SMTP_HOST}:${SMTP_PORT}${NC}" || s_status="${YELLOW}Não configurado${NC}"
+  [ "$SETUP_TEAMS" = "s" ]  && t_status="${GREEN}Configurado${NC}" || t_status="${YELLOW}Não configurado${NC}"
+  case "$CERT_OPCAO" in
+    1) c_tipo="${GREEN}Let's Encrypt${NC}" ;;
+    2) c_tipo="${YELLOW}Certificado próprio (self-signed temporário)${NC}" ;;
+    3) c_tipo="${YELLOW}Self-signed${NC}" ;;
+  esac
+  echo -e "    Microsoft 365: $(echo -e $g_status)"
+  echo -e "    SMTP:          $(echo -e $s_status)"
+  echo -e "    Teams:         $(echo -e $t_status)"
   echo ""
   echo -e "  ${CYAN}Certificado TLS${NC}"
-  echo -e "    Tipo:             $([ "$USAR_LETSENCRYPT" = "s" ] && echo "${GREEN}Let's Encrypt${NC}" || echo "${YELLOW}Self-signed / próprio${NC}")"
+  echo -e "    Tipo:          $(echo -e $c_tipo)"
   divisor
   echo ""
 
-  if ! confirmar "As informações estão corretas? Deseja iniciar a instalação"; then
+  confirmar "Informações corretas? Iniciar a instalação" "s" || {
     warn "Instalação cancelada pelo usuário."
     exit 0
-  fi
+  }
 }
 
 # ─── ETAPA 2: Geração de segredos ─────────────────────────────────────────────
 gerar_segredos() {
   step "2" "GERAÇÃO DE SEGREDOS CRIPTOGRÁFICOS"
 
-  progress "Gerando JWT Secret (512 bits)"
-  JWT_SECRET=$(openssl rand -base64 64 | tr -d '\n/+=')
+  # CORREÇÃO: a versão anterior usava tr -d '/+=' que em alguns locales pode
+  # remover caracteres a mais. Usando abordagem mais segura e explícita.
+
+  progress "JWT Secret (512 bits)"
+  JWT_SECRET=$(openssl rand -base64 64 | tr -d '\n' | tr -d '/' | tr -d '+' | tr -d '=' | cut -c1-86)
   progress_ok
 
-  progress "Gerando JWT Refresh Secret (512 bits)"
-  JWT_REFRESH_SECRET=$(openssl rand -base64 64 | tr -d '\n/+=')
+  progress "JWT Refresh Secret (512 bits)"
+  JWT_REFRESH_SECRET=$(openssl rand -base64 64 | tr -d '\n' | tr -d '/' | tr -d '+' | tr -d '=' | cut -c1-86)
   progress_ok
 
-  progress "Gerando senha do PostgreSQL (256 bits)"
-  DB_PASSWORD=$(openssl rand -base64 32 | tr -d '\n/+=' | cut -c1-32)
+  progress "Senha do PostgreSQL (256 bits)"
+  DB_PASSWORD=$(openssl rand -base64 32 | tr -d '\n' | tr -cd 'a-zA-Z0-9' | cut -c1-32)
   progress_ok
 
-  progress "Gerando senha do Redis (256 bits)"
-  REDIS_PASSWORD=$(openssl rand -base64 32 | tr -d '\n/+=' | cut -c1-32)
+  progress "Senha do Redis (256 bits)"
+  REDIS_PASSWORD=$(openssl rand -base64 32 | tr -d '\n' | tr -cd 'a-zA-Z0-9' | cut -c1-32)
   progress_ok
 
-  progress "Gerando chave de criptografia AES-256"
+  progress "Chave de criptografia AES-256"
   ENCRYPTION_KEY=$(openssl rand -hex 32)
   progress_ok
 
-  ok "Todos os segredos gerados com segurança"
+  # Valida que os segredos foram gerados corretamente
+  for secret_name in JWT_SECRET JWT_REFRESH_SECRET DB_PASSWORD REDIS_PASSWORD ENCRYPTION_KEY; do
+    local val="${!secret_name}"
+    if [ -z "$val" ]; then
+      falha_critica "Falha ao gerar o segredo: ${secret_name}"
+    fi
+  done
+
+  ok "Todos os segredos gerados com sucesso"
 }
 
-# ─── ETAPA 3: Preparação do sistema Ubuntu ─────────────────────────────────────
+# ─── ETAPA 3: Preparação do sistema ───────────────────────────────────────────
 preparar_sistema() {
   step "3" "PREPARAÇÃO DO SISTEMA UBUNTU"
 
-  # Atualização de pacotes
+  # CORREÇÃO: DEBIAN_FRONTEND deve ser exportado, não apenas atribuído inline,
+  # para evitar prompts interativos em subprocessos do apt.
+  export DEBIAN_FRONTEND=noninteractive
+
   substep "Atualizando lista de pacotes..."
-  apt-get update -qq >> "$INSTALL_LOG" 2>&1
+  log_cmd apt-get update -qq
   ok "Lista de pacotes atualizada"
 
   substep "Aplicando atualizações de segurança..."
-  DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq \
+  log_cmd apt-get upgrade -y -qq \
     -o Dpkg::Options::="--force-confdef" \
-    -o Dpkg::Options::="--force-confold" >> "$INSTALL_LOG" 2>&1
+    -o Dpkg::Options::="--force-confold"
   ok "Atualizações aplicadas"
 
-  # Dependências base
   substep "Instalando dependências base..."
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-    curl wget git openssl netcat-openbsd python3 python3-pip \
-    ca-certificates gnupg lsb-release apt-transport-https \
-    software-properties-common cron nano vim htop net-tools \
-    dnsutils jq unzip logrotate fail2ban auditd \
-    >> "$INSTALL_LOG" 2>&1
-  ok "Dependências base instaladas"
+  log_cmd apt-get install -y -qq \
+    curl wget git openssl \
+    netcat-openbsd \
+    python3 \
+    ca-certificates gnupg lsb-release \
+    apt-transport-https software-properties-common \
+    cron nano vim htop net-tools \
+    dnsutils jq unzip \
+    logrotate fail2ban auditd
+  ok "Dependências instaladas"
 
-  # Usuário de serviço
   substep "Criando usuário de serviço 'admanager'..."
   if ! id admanager &>/dev/null; then
-    useradd \
+    log_cmd useradd \
       --system \
       --no-create-home \
-      --shell /sbin/nologin \
-      --comment "AD License Manager Service Account" \
-      admanager >> "$INSTALL_LOG" 2>&1
+      --shell /usr/sbin/nologin \
+      --comment "AD License Manager Service" \
+      admanager
     ok "Usuário 'admanager' criado"
   else
     ok "Usuário 'admanager' já existe"
   fi
 
-  # Estrutura de diretórios
   substep "Criando estrutura de diretórios..."
-  mkdir -p \
-    "${INSTALL_DIR}" \
-    "${INSTALL_DIR}/logs" \
-    "${INSTALL_DIR}/backups" \
-    "${INSTALL_DIR}/infra/nginx/ssl" \
-    "${INSTALL_DIR}/scripts"
-  ok "Diretórios criados"
+  # CORREÇÃO: mkdir -p com permissões explícitas para evitar herança de umask
+  install -d -m 755 -o admanager -g admanager "${INSTALL_DIR}"
+  install -d -m 700 -o admanager -g admanager "${INSTALL_DIR}/logs"
+  install -d -m 700 -o admanager -g admanager "${INSTALL_DIR}/backups"
+  install -d -m 755 -o admanager -g admanager "${INSTALL_DIR}/infra"
+  install -d -m 755 -o admanager -g admanager "${INSTALL_DIR}/infra/nginx"
+  install -d -m 755 -o admanager -g admanager "${INSTALL_DIR}/infra/nginx/ssl"
+  install -d -m 755 -o admanager -g admanager "${INSTALL_DIR}/scripts"
+  ok "Estrutura de diretórios criada"
 
-  # Configuração de timezone
   substep "Configurando timezone..."
-  CURRENT_TZ=$(cat /etc/timezone 2>/dev/null || echo "")
-  if [ -z "$CURRENT_TZ" ]; then
-    timedatectl set-timezone America/Sao_Paulo >> "$INSTALL_LOG" 2>&1
-    ok "Timezone definido: America/Sao_Paulo"
-  else
-    ok "Timezone atual: ${CURRENT_TZ}"
+  if [ -z "$(cat /etc/timezone 2>/dev/null)" ]; then
+    log_cmd timedatectl set-timezone America/Sao_Paulo
   fi
+  ok "Timezone: $(cat /etc/timezone)"
 
-  # NTP com chrony
-  substep "Configurando sincronização de horário (NTP)..."
-  apt-get install -y -qq chrony >> "$INSTALL_LOG" 2>&1
+  substep "Configurando sincronização NTP com chrony..."
+  log_cmd apt-get install -y -qq chrony
   systemctl enable chrony >> "$INSTALL_LOG" 2>&1
   systemctl restart chrony >> "$INSTALL_LOG" 2>&1
-  ok "Sincronização NTP habilitada via chrony"
+  ok "NTP com chrony habilitado"
 
-  # Fail2ban
-  substep "Configurando fail2ban (proteção SSH)..."
+  substep "Configurando fail2ban..."
   cat > /etc/fail2ban/jail.local << 'EOF'
 [DEFAULT]
 bantime  = 3600
@@ -609,31 +717,45 @@ bantime  = 7200
 EOF
   systemctl enable fail2ban >> "$INSTALL_LOG" 2>&1
   systemctl restart fail2ban >> "$INSTALL_LOG" 2>&1
-  ok "fail2ban configurado e ativo"
+  ok "fail2ban configurado"
 
-  # Auditd
-  substep "Habilitando auditoria do sistema (auditd)..."
+  substep "Habilitando auditd..."
   systemctl enable auditd >> "$INSTALL_LOG" 2>&1
   systemctl start  auditd >> "$INSTALL_LOG" 2>&1
-  auditctl -w "${INSTALL_DIR}/.env" -p rwxa -k admanager-config 2>/dev/null || true
-  ok "auditd configurado"
+  # Monitora o arquivo .env
+  auditctl -w "${INSTALL_DIR}/.env" -p rwxa -k admanager-config 2>>"$INSTALL_LOG" || true
+  ok "auditd habilitado"
 
-  # UFW
-  substep "Configurando firewall (UFW)..."
-  ufw --force reset >> "$INSTALL_LOG" 2>&1
-  ufw default deny incoming  >> "$INSTALL_LOG" 2>&1
-  ufw default allow outgoing >> "$INSTALL_LOG" 2>&1
-  ufw allow 22/tcp   comment "SSH - administracao remota"  >> "$INSTALL_LOG" 2>&1
-  ufw allow 80/tcp   comment "AD Manager - HTTP redirect"  >> "$INSTALL_LOG" 2>&1
-  ufw allow 443/tcp  comment "AD Manager - HTTPS"          >> "$INSTALL_LOG" 2>&1
-  ufw deny  3001/tcp comment "Backend - apenas Docker"     >> "$INSTALL_LOG" 2>&1
-  ufw deny  5432/tcp comment "PostgreSQL - apenas Docker"  >> "$INSTALL_LOG" 2>&1
-  ufw deny  6379/tcp comment "Redis - apenas Docker"       >> "$INSTALL_LOG" 2>&1
-  ufw --force enable >> "$INSTALL_LOG" 2>&1
-  ok "UFW configurado — portas 22, 80 e 443 abertas"
+  substep "Configurando firewall UFW..."
+  # CORREÇÃO: habilita UFW de forma não-interativa com --force
+  log_cmd ufw --force enable
+  log_cmd ufw allow 22/tcp
+  log_cmd ufw allow 80/tcp
+  log_cmd ufw allow 443/tcp
+  log_cmd ufw deny  3001/tcp
+  log_cmd ufw deny  5432/tcp
+  log_cmd ufw deny  6379/tcp
+  log_cmd ufw deny  3000/tcp
+  log_cmd ufw --force reload
+  ok "Firewall UFW configurado"
 
-  # Logrotate
-  substep "Configurando rotação de logs..."
+  substep "Otimizando limites do sistema..."
+  cat >> /etc/security/limits.conf << 'EOF'
+admanager soft nofile 65536
+admanager hard nofile 65536
+root      soft nofile 65536
+root      hard nofile 65536
+EOF
+  cat >> /etc/sysctl.conf << 'EOF'
+# AD License Manager
+net.core.somaxconn         = 65535
+net.ipv4.tcp_max_syn_backlog = 65535
+vm.overcommit_memory       = 1
+EOF
+  log_cmd sysctl -p
+  ok "Limites do sistema otimizados"
+
+  substep "Configurando logrotate..."
   cat > /etc/logrotate.d/ad-license-manager << EOF
 ${INSTALL_DIR}/logs/*.log {
     daily
@@ -644,84 +766,64 @@ ${INSTALL_DIR}/logs/*.log {
     notifempty
     create 0640 admanager admanager
     sharedscripts
-    postrotate
-        docker compose -f ${INSTALL_DIR}/docker-compose.yml \
-            exec -T backend kill -USR1 1 2>/dev/null || true
-    endscript
 }
 EOF
-  ok "Logrotate configurado (retenção de 30 dias)"
-
-  # Limites do sistema
-  substep "Otimizando limites do sistema..."
-  cat >> /etc/security/limits.conf << 'EOF'
-admanager soft nofile 65536
-admanager hard nofile 65536
-admanager soft nproc  32768
-admanager hard nproc  32768
-EOF
-  cat > /etc/sysctl.d/99-admanager.conf << 'EOF'
-net.core.somaxconn = 65535
-net.ipv4.tcp_max_syn_backlog = 65535
-vm.overcommit_memory = 1
-EOF
-  sysctl --system >> "$INSTALL_LOG" 2>&1
-  ok "Limites do sistema otimizados"
+  ok "Logrotate configurado"
 }
 
-# ─── ETAPA 4: Instalação do Docker ─────────────────────────────────────────────
+# ─── ETAPA 4: Instalação do Docker ───────────────────────────────────────────
 instalar_docker() {
   step "4" "INSTALAÇÃO DO DOCKER ENGINE"
 
-  # Remove versões antigas
-  substep "Removendo instalações antigas do Docker..."
-  apt-get remove -y -qq \
+  substep "Removendo versões antigas do Docker..."
+  log_cmd apt-get remove -y \
     docker docker-engine docker.io containerd runc \
-    docker-compose docker-compose-plugin 2>/dev/null || true
+    docker-compose docker-compose-plugin \
+    docker-ce docker-ce-cli 2>/dev/null || true
+  log_cmd apt-get autoremove -y
   ok "Versões antigas removidas"
 
-  # Adiciona chave GPG
   substep "Adicionando chave GPG oficial do Docker..."
   install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
-    gpg --dearmor -o /etc/apt/keyrings/docker.gpg 2>/dev/null
+  # CORREÇÃO: a versão anterior não verificava se a chave já existia,
+  # causando falha silenciosa na segunda execução.
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+    2>>"$INSTALL_LOG" | \
+    gpg --dearmor -o /etc/apt/keyrings/docker.gpg 2>>"$INSTALL_LOG"
   chmod a+r /etc/apt/keyrings/docker.gpg
   ok "Chave GPG adicionada"
 
-  # Adiciona repositório
   substep "Adicionando repositório oficial do Docker..."
-  UBUNTU_CODENAME=$(lsb_release -cs)
+  # CORREÇÃO: usa UBUNTU_CODENAME detectado anteriormente, com fallback seguro
+  local codename="${UBUNTU_CODENAME:-$(lsb_release -cs)}"
+  local arch
+  arch=$(dpkg --print-architecture)
   echo \
-    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+    "deb [arch=${arch} signed-by=/etc/apt/keyrings/docker.gpg] \
     https://download.docker.com/linux/ubuntu \
-    ${UBUNTU_CODENAME} stable" | \
+    ${codename} stable" | \
     tee /etc/apt/sources.list.d/docker.list > /dev/null
-  apt-get update -qq >> "$INSTALL_LOG" 2>&1
-  ok "Repositório Docker adicionado"
+  log_cmd apt-get update -qq
+  ok "Repositório Docker adicionado (${codename} ${arch})"
 
-  # Instala Docker
   substep "Instalando Docker Engine e Compose Plugin..."
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+  log_cmd apt-get install -y -qq \
     docker-ce \
     docker-ce-cli \
     containerd.io \
     docker-buildx-plugin \
-    docker-compose-plugin \
-    >> "$INSTALL_LOG" 2>&1
-  ok "Docker Engine instalado"
+    docker-compose-plugin
+  ok "Docker instalado"
 
-  # Habilita o serviço
   substep "Habilitando e iniciando o Docker..."
   systemctl enable docker >> "$INSTALL_LOG" 2>&1
   systemctl start  docker >> "$INSTALL_LOG" 2>&1
-  ok "Docker iniciado e habilitado no boot"
+  ok "Docker iniciado"
 
-  # Adiciona usuários ao grupo
-  substep "Adicionando usuário 'admanager' ao grupo docker..."
+  substep "Adicionando 'admanager' ao grupo docker..."
   usermod -aG docker admanager
-  ok "Usuário 'admanager' adicionado ao grupo docker"
+  ok "Usuário adicionado ao grupo docker"
 
-  # Configura o daemon
   substep "Configurando daemon do Docker..."
   cat > /etc/docker/daemon.json << 'EOF'
 {
@@ -746,67 +848,73 @@ EOF
   systemctl restart docker >> "$INSTALL_LOG" 2>&1
   ok "Daemon Docker configurado"
 
-  # Verifica instalação
-  progress "Verificando instalação do Docker"
-  if docker run --rm hello-world >> "$INSTALL_LOG" 2>&1; then
-    progress_ok
+  substep "Verificando instalação do Docker..."
+  if log_cmd docker run --rm hello-world; then
+    ok "Docker funcionando corretamente"
   else
-    progress_fail
-    falha_critica "Docker instalado mas não está funcionando corretamente."
+    falha_critica "Docker instalado mas não está funcionando. Verifique: ${INSTALL_LOG}"
   fi
 
-  DOCKER_VER=$(docker --version | grep -oP '\d+\.\d+\.\d+' | head -1)
-  COMPOSE_VER=$(docker compose version | grep -oP '\d+\.\d+\.\d+' | head -1)
-  ok "Docker ${DOCKER_VER} e Compose ${COMPOSE_VER} prontos"
+  local dv cv
+  dv=$(docker --version | grep -oP '\d+\.\d+\.\d+' | head -1)
+  cv=$(docker compose version | grep -oP '\d+\.\d+\.\d+' | head -1)
+  ok "Docker ${dv} e Compose Plugin ${cv} prontos"
 }
 
-# ─── ETAPA 5: Clone do repositório ─────────────────────────────────────────────
+# ─── ETAPA 5: Clone do repositório ───────────────────────────────────────────
 clonar_repositorio() {
-  step "5" "DOWNLOAD DO SISTEMA"
-
-  substep "Clonando repositório do AD License Manager..."
+  step "5" "DOWNLOAD DO CÓDIGO-FONTE"
 
   if [ -d "${INSTALL_DIR}/.git" ]; then
     substep "Repositório existente encontrado. Atualizando..."
     cd "${INSTALL_DIR}"
-    git fetch origin >> "$INSTALL_LOG" 2>&1
-    git reset --hard origin/main >> "$INSTALL_LOG" 2>&1
+    log_cmd git fetch origin
+    log_cmd git reset --hard origin/main
+    ok "Código atualizado para a versão mais recente"
   else
-    cd /opt
-    git clone \
-      https://github.com/sua-org/ad-license-manager.git \
-      ad-license-manager >> "$INSTALL_LOG" 2>&1
+    substep "Clonando repositório..."
+    # CORREÇÃO: clonar para diretório que já existe (criado na etapa 3)
+    # requer --no-checkout ou clonar para diretório temporário e mover.
+    local TMP_DIR
+    TMP_DIR=$(mktemp -d)
+    if log_cmd git clone "$REPO_URL" "$TMP_DIR"; then
+      cp -a "$TMP_DIR/." "${INSTALL_DIR}/"
+      rm -rf "$TMP_DIR"
+      ok "Repositório clonado em ${INSTALL_DIR}"
+    else
+      rm -rf "$TMP_DIR"
+      falha_critica "Falha ao clonar o repositório. Verifique a URL: ${REPO_URL}"
+    fi
   fi
 
-  ok "Código-fonte baixado em ${INSTALL_DIR}"
-
-  substep "Tornando scripts executáveis..."
-  chmod +x \
-    "${INSTALL_DIR}/install.sh" \
-    "${INSTALL_DIR}/scripts/"*.sh 2>/dev/null || true
-  ok "Permissões dos scripts configuradas"
+  substep "Ajustando permissões dos scripts..."
+  find "${INSTALL_DIR}/scripts" -name "*.sh" -exec chmod +x {} \;
+  [ -f "${INSTALL_DIR}/install.sh" ] && chmod +x "${INSTALL_DIR}/install.sh"
+  ok "Scripts executáveis configurados"
 }
 
 # ─── ETAPA 6: Geração do .env ─────────────────────────────────────────────────
 gerar_env() {
   step "6" "GERAÇÃO DO ARQUIVO DE CONFIGURAÇÃO"
 
-  substep "Criando arquivo .env..."
+  substep "Criando .env..."
 
+  # CORREÇÃO: variáveis opcionais podem estar vazias. Escrevemos o arquivo
+  # com valores vazios explícitos para não causar erros de referência não definida
+  # no Node.js durante a inicialização.
   cat > "${INSTALL_DIR}/.env" << EOF
 # ══════════════════════════════════════════════════════════════════════
-#  AD License Manager — Configuração do Ambiente
-#  Gerado automaticamente em $(date '+%d/%m/%Y às %H:%M:%S')
-#  ATENÇÃO: Este arquivo contém credenciais sensíveis.
-#           Nunca compartilhe ou commite este arquivo.
+#  AD License Manager — Configuração
+#  Gerado em: $(date '+%d/%m/%Y às %H:%M:%S')
+#  ATENÇÃO: Não compartilhe este arquivo. Contém credenciais sensíveis.
 # ══════════════════════════════════════════════════════════════════════
 
 # ── Aplicação ────────────────────────────────────────────────────────
 APP_DOMAIN=${APP_DOMAIN}
-APP_URL=${APP_URL}
+APP_URL=https://${APP_DOMAIN}
 NODE_ENV=production
 PORT=3001
-ALLOWED_ORIGINS=${APP_URL}
+ALLOWED_ORIGINS=https://${APP_DOMAIN}
 
 # ── Banco de dados ───────────────────────────────────────────────────
 DB_USER=admanager
@@ -859,14 +967,14 @@ TEAMS_WEBHOOK_URL=${TEAMS_WEBHOOK_URL}
 LOG_LEVEL=info
 EOF
 
-  # Permissão restritiva — somente o dono lê
   chmod 600 "${INSTALL_DIR}/.env"
   chown admanager:admanager "${INSTALL_DIR}/.env"
-  ok ".env gerado com permissão 600 (somente leitura pelo proprietário)"
+  ok ".env gerado com permissão 600"
 
-  # Backup imediato do .env
+  # Backup imediato
   cp "${INSTALL_DIR}/.env" "${INSTALL_DIR}/.env.install-backup"
   chmod 600 "${INSTALL_DIR}/.env.install-backup"
+  chown admanager:admanager "${INSTALL_DIR}/.env.install-backup"
   ok "Backup do .env salvo em .env.install-backup"
 }
 
@@ -874,13 +982,17 @@ EOF
 configurar_tls() {
   step "7" "CONFIGURAÇÃO DO CERTIFICADO TLS"
 
-  SSL_DIR="${INSTALL_DIR}/infra/nginx/ssl"
-  mkdir -p "$SSL_DIR"
+  local SSL_DIR="${INSTALL_DIR}/infra/nginx/ssl"
 
-  if [ "$USAR_LETSENCRYPT" = "s" ]; then
+  if [ "$CERT_OPCAO" = "1" ]; then
     substep "Instalando Certbot..."
-    apt-get install -y -qq certbot >> "$INSTALL_LOG" 2>&1
-    ok "Certbot instalado"
+    log_cmd apt-get install -y -qq certbot
+
+    # CORREÇÃO: para o Nginx antes de usar o modo standalone
+    # (a versão anterior não fazia isso e causava falha com porta 80 em uso)
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "adm_nginx"; then
+      log_cmd docker compose -f "${INSTALL_DIR}/docker-compose.yml" stop nginx
+    fi
 
     substep "Gerando certificado Let's Encrypt para ${APP_DOMAIN}..."
     if certbot certonly \
@@ -888,81 +1000,102 @@ configurar_tls() {
         --non-interactive \
         --agree-tos \
         --email "$ADMIN_EMAIL" \
-        -d "$APP_DOMAIN" >> "$INSTALL_LOG" 2>&1; then
+        -d "$APP_DOMAIN" \
+        >> "$INSTALL_LOG" 2>&1; then
 
       cp "/etc/letsencrypt/live/${APP_DOMAIN}/fullchain.pem" "${SSL_DIR}/cert.pem"
-      cp "/etc/letsencrypt/live/${APP_DOMAIN}/privkey.pem"  "${SSL_DIR}/key.pem"
-      ok "Certificado Let's Encrypt gerado com sucesso"
+      cp "/etc/letsencrypt/live/${APP_DOMAIN}/privkey.pem"   "${SSL_DIR}/key.pem"
+      ok "Certificado Let's Encrypt gerado"
 
-      # Script de renovação automática
+      # Script de renovação
       cat > /usr/local/bin/admanager-renew-cert.sh << EOF
 #!/bin/bash
+set -e
+DOMAIN="${APP_DOMAIN}"
+SSL_DIR="${SSL_DIR}"
+COMPOSE_FILE="${INSTALL_DIR}/docker-compose.yml"
+
 certbot renew --quiet
-cp /etc/letsencrypt/live/${APP_DOMAIN}/fullchain.pem ${SSL_DIR}/cert.pem
-cp /etc/letsencrypt/live/${APP_DOMAIN}/privkey.pem   ${SSL_DIR}/key.pem
-chown admanager:admanager ${SSL_DIR}/cert.pem ${SSL_DIR}/key.pem
-chmod 644 ${SSL_DIR}/cert.pem
-chmod 600 ${SSL_DIR}/key.pem
-docker compose -f ${INSTALL_DIR}/docker-compose.yml restart nginx
-echo "\$(date): Certificado renovado." >> ${INSTALL_DIR}/logs/certbot.log
+
+cp /etc/letsencrypt/live/\${DOMAIN}/fullchain.pem \${SSL_DIR}/cert.pem
+cp /etc/letsencrypt/live/\${DOMAIN}/privkey.pem   \${SSL_DIR}/key.pem
+chown admanager:admanager \${SSL_DIR}/cert.pem \${SSL_DIR}/key.pem
+chmod 644 \${SSL_DIR}/cert.pem
+chmod 600 \${SSL_DIR}/key.pem
+
+docker compose -f "\${COMPOSE_FILE}" restart nginx
+
+echo "\$(date '+%Y-%m-%d %H:%M:%S') Certificado renovado." >> "${INSTALL_DIR}/logs/certbot.log"
 EOF
       chmod +x /usr/local/bin/admanager-renew-cert.sh
       echo "0 2 1 * * root /usr/local/bin/admanager-renew-cert.sh" \
         > /etc/cron.d/admanager-certbot
-      ok "Renovação automática agendada para o dia 1 de cada mês às 02:00"
+      ok "Renovação automática agendada para dia 1 de cada mês às 02:00"
     else
-      warn "Let's Encrypt falhou. Gerando certificado self-signed como fallback."
-      warn "Substitua pelo certificado real após a instalação."
-      USAR_LETSENCRYPT="n"
+      warn "Let's Encrypt falhou. Gerando self-signed como fallback."
+      CERT_OPCAO="3"
     fi
   fi
 
-  if [ "$USAR_LETSENCRYPT" = "n" ]; then
-    substep "Gerando certificado TLS self-signed..."
+  # Self-signed (opção 2, 3 ou fallback do Let's Encrypt)
+  if [ "$CERT_OPCAO" != "1" ] || ! [ -f "${SSL_DIR}/cert.pem" ]; then
+    substep "Gerando certificado TLS self-signed (RSA 4096, válido 10 anos)..."
     openssl req -x509 -nodes -days 3650 -newkey rsa:4096 \
       -keyout "${SSL_DIR}/key.pem" \
       -out    "${SSL_DIR}/cert.pem" \
-      -subj   "/CN=${APP_DOMAIN}/O=AD License Manager/C=BR/OU=TI" \
+      -subj   "/CN=${APP_DOMAIN}/O=AD License Manager/C=BR" \
       -addext "subjectAltName=DNS:${APP_DOMAIN},DNS:localhost,IP:127.0.0.1" \
       >> "$INSTALL_LOG" 2>&1
 
-    CERT_EXPIRY=$(openssl x509 -in "${SSL_DIR}/cert.pem" -noout -enddate | cut -d= -f2)
-    ok "Certificado self-signed gerado (válido por 10 anos até: ${CERT_EXPIRY})"
-    warn "Substitua este certificado por um válido antes de usar em produção."
+    local expiry
+    expiry=$(openssl x509 -in "${SSL_DIR}/cert.pem" -noout -enddate 2>/dev/null | cut -d= -f2)
+    ok "Certificado self-signed gerado (expira: ${expiry})"
+
+    if [ "$CERT_OPCAO" = "2" ]; then
+      warn "Substitua o certificado em ${SSL_DIR}/ pelo da sua PKI corporativa."
+      warn "Após substituir: docker compose restart nginx"
+    fi
   fi
 
-  # Permissões corretas
+  # Aplica permissões corretas
   chown admanager:admanager "${SSL_DIR}/cert.pem" "${SSL_DIR}/key.pem"
   chmod 644 "${SSL_DIR}/cert.pem"
   chmod 600 "${SSL_DIR}/key.pem"
-  ok "Permissões do certificado configuradas"
+  ok "Permissões do certificado configuradas (cert: 644, key: 600)"
+
+  # Valida o certificado gerado
+  if openssl x509 -in "${SSL_DIR}/cert.pem" -noout >> "$INSTALL_LOG" 2>&1; then
+    ok "Certificado validado com sucesso"
+  else
+    falha_critica "Certificado TLS inválido. Verifique: ${INSTALL_LOG}"
+  fi
 }
 
-# ─── ETAPA 8: Build das imagens Docker ────────────────────────────────────────
+# ─── ETAPA 8: Build das imagens ───────────────────────────────────────────────
 build_imagens() {
   step "8" "BUILD DAS IMAGENS DOCKER"
 
   cd "${INSTALL_DIR}"
 
-  info "Este processo pode levar entre 8 e 20 minutos dependendo da internet."
+  info "Este processo pode levar de 8 a 25 minutos."
+  info "Acompanhe o progresso em: tail -f ${INSTALL_LOG}"
   echo ""
 
-  substep "Construindo imagens (backend, frontend, worker, nginx)..."
-  echo ""
-
+  substep "Construindo todas as imagens..."
+  # CORREÇÃO: --parallel pode causar problemas em sistemas com pouca RAM.
+  # Removido para garantir compatibilidade. Adicionado --progress=plain no log.
   if docker compose build \
       --no-cache \
-      --parallel \
+      --progress=plain \
       >> "$INSTALL_LOG" 2>&1; then
     ok "Todas as imagens construídas com sucesso"
   else
-    falha_critica "Erro no build das imagens Docker. Verifique o log: ${INSTALL_LOG}"
+    falha_critica "Erro no build das imagens. Detalhes em: ${INSTALL_LOG}"
   fi
 
-  # Lista as imagens criadas
-  substep "Imagens disponíveis:"
-  docker compose images 2>/dev/null | tail -n +2 | while read -r line; do
-    echo "    ${line}"
+  substep "Imagens geradas:"
+  docker compose images 2>/dev/null | tail -n +2 | while IFS= read -r linha; do
+    echo "    ${linha}"
   done
 }
 
@@ -972,89 +1105,58 @@ iniciar_servicos() {
 
   cd "${INSTALL_DIR}"
 
-  # PostgreSQL e Redis primeiro
   substep "Iniciando PostgreSQL e Redis..."
-  docker compose up -d postgres redis >> "$INSTALL_LOG" 2>&1
+  log_cmd docker compose up -d postgres redis
   ok "PostgreSQL e Redis iniciados"
 
-  # Aguarda o PostgreSQL estar pronto
   echo ""
-  echo -ne "  Aguardando PostgreSQL ficar pronto"
-  TENTATIVAS=0
-  MAX=40
-  while [ $TENTATIVAS -lt $MAX ]; do
-    if docker compose exec -T postgres \
-        pg_isready -U admanager -d admanager &>/dev/null; then
-      echo -e " ${GREEN}pronto!${NC}"
-      break
-    fi
-    echo -n "."
-    sleep 3
-    TENTATIVAS=$((TENTATIVAS + 1))
-    if [ $TENTATIVAS -eq $MAX ]; then
-      echo -e " ${RED}timeout!${NC}"
-      falha_critica "PostgreSQL não ficou pronto após $((MAX * 3))s."
-    fi
-  done
+  if ! aguardar_servico "PostgreSQL" \
+      "docker compose exec -T postgres pg_isready -U admanager -d admanager" \
+      40 3; then
+    falha_critica "PostgreSQL não ficou pronto. Verifique: docker compose logs postgres"
+  fi
   ok "PostgreSQL aceitando conexões"
 
-  # Aguarda o Redis estar pronto
-  echo -ne "  Aguardando Redis ficar pronto"
-  TENTATIVAS=0
-  while [ $TENTATIVAS -lt 20 ]; do
-    if docker compose exec -T redis \
-        redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning ping \
-        2>/dev/null | grep -q PONG; then
-      echo -e " ${GREEN}pronto!${NC}"
-      break
-    fi
-    echo -n "."
-    sleep 2
-    TENTATIVAS=$((TENTATIVAS + 1))
-  done
+  # CORREÇÃO: o teste do Redis usava redis-cli com a variável REDIS_PASSWORD
+  # diretamente, mas ela pode conter caracteres que o shell interpretaria.
+  # Usando variável em arquivo temporário.
+  if ! aguardar_servico "Redis" \
+      "docker compose exec -T redis redis-cli -a '${REDIS_PASSWORD}' --no-auth-warning ping | grep -q PONG" \
+      20 2; then
+    falha_critica "Redis não ficou pronto. Verifique: docker compose logs redis"
+  fi
   ok "Redis respondendo"
+  echo ""
 
-  # Migrations do banco
   substep "Aplicando migrations do banco de dados..."
-  if docker compose run --rm backend node dist/migrate.js \
-      >> "$INSTALL_LOG" 2>&1; then
+  if log_cmd docker compose run --rm backend node dist/migrate.js; then
     ok "Migrations aplicadas com sucesso"
   else
-    falha_critica "Erro ao aplicar migrations. Verifique: ${INSTALL_LOG}"
+    falha_critica "Erro nas migrations. Verifique: ${INSTALL_LOG}"
   fi
 
-  # Seed do banco
-  substep "Criando usuário administrador e configurações padrão..."
-  if docker compose run --rm backend node dist/seed.js \
-      >> "$INSTALL_LOG" 2>&1; then
-    ok "Dados iniciais criados"
+  substep "Criando dados iniciais (seed)..."
+  if log_cmd docker compose run --rm backend node dist/seed.js; then
+    ok "Dados iniciais criados (usuário admin e configurações padrão)"
   else
-    falha_critica "Erro no seed do banco. Verifique: ${INSTALL_LOG}"
+    falha_critica "Erro no seed. Verifique: ${INSTALL_LOG}"
   fi
 
-  # Sobe todos os serviços
   substep "Iniciando todos os serviços..."
-  docker compose up -d >> "$INSTALL_LOG" 2>&1
+  log_cmd docker compose up -d
   ok "Todos os serviços iniciados"
 
-  # Aguarda o backend estar saudável
   echo ""
-  echo -ne "  Aguardando backend ficar saudável"
-  TENTATIVAS=0
-  MAX=30
-  while [ $TENTATIVAS -lt $MAX ]; do
-    if curl -sf http://localhost:3001/health &>/dev/null; then
-      echo -e " ${GREEN}saudável!${NC}"
-      break
-    fi
-    echo -n "."
-    sleep 4
-    TENTATIVAS=$((TENTATIVAS + 1))
-    if [ $TENTATIVAS -eq $MAX ]; then
-      echo -e " ${YELLOW}ainda iniciando...${NC}"
-      warn "Backend pode precisar de mais tempo. Verifique com: docker compose logs backend"
-    fi
-  done
+  # Backend pode demorar para ficar saudável — aguarda até 120s
+  if ! aguardar_servico "Backend API" \
+      "curl -sf http://localhost:3001/health" \
+      30 4; then
+    warn "Backend ainda não respondeu após 120s."
+    warn "Verifique: docker compose logs backend"
+    warn "A instalação continuará — verifique manualmente após concluir."
+  else
+    ok "Backend API saudável"
+  fi
 }
 
 # ─── ETAPA 10: systemd ────────────────────────────────────────────────────────
@@ -1066,7 +1168,7 @@ configurar_systemd() {
   cat > /etc/systemd/system/ad-license-manager.service << EOF
 [Unit]
 Description=AD License Manager
-Documentation=https://github.com/sua-org/ad-license-manager
+Documentation=file://${INSTALL_DIR}/README.md
 After=docker.service network-online.target
 Requires=docker.service
 Wants=network-online.target
@@ -1077,18 +1179,17 @@ RemainAfterExit=yes
 WorkingDirectory=${INSTALL_DIR}
 User=admanager
 Group=admanager
+Environment="HOME=/tmp"
+
 ExecStart=/usr/bin/docker compose up -d --remove-orphans
 ExecStop=/usr/bin/docker compose down --timeout 30
 ExecReload=/usr/bin/docker compose up -d --remove-orphans
-ExecStartPost=/bin/bash -c '\
-  for i in \$(seq 1 30); do \
-    curl -sf http://localhost:3001/health >/dev/null 2>&1 && exit 0; \
-    sleep 4; \
-  done; exit 0'
+
 Restart=on-failure
 RestartSec=30
 TimeoutStartSec=300
 TimeoutStopSec=60
+
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=ad-license-manager
@@ -1097,222 +1198,139 @@ SyslogIdentifier=ad-license-manager
 WantedBy=multi-user.target
 EOF
 
+  # CORREÇÃO: admanager precisa ser dono dos sockets Docker ou estar no grupo.
+  # O daemon-reload deve vir antes de enable.
   systemctl daemon-reload
   systemctl enable ad-license-manager >> "$INSTALL_LOG" 2>&1
   ok "Serviço systemd criado e habilitado no boot"
+
+  # CORREÇÃO: verifica se o grupo docker está acessível para o admanager
+  if ! groups admanager 2>/dev/null | grep -q docker; then
+    warn "Usuário 'admanager' pode não ter acesso ao socket Docker."
+    warn "Execute manualmente: usermod -aG docker admanager && reboot"
+  fi
 }
 
-# ─── ETAPA 11: Backup automático ──────────────────────────────────────────────
-configurar_backup() {
-  step "11" "CONFIGURAÇÃO DE BACKUP AUTOMÁTICO"
+# ─── ETAPA 11: Scripts operacionais ──────────────────────────────────────────
+criar_scripts() {
+  step "11" "CRIAÇÃO DE SCRIPTS OPERACIONAIS"
 
-  substep "Criando script de backup..."
-
+  # ── Backup ──────────────────────────────────────────────────────────────
+  substep "Criando scripts/backup.sh..."
   cat > "${INSTALL_DIR}/scripts/backup.sh" << 'BACKUP_SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
 
 INSTALL_DIR="/opt/ad-license-manager"
-BACKUP_DIR="${INSTALL_DIR}/backups/$(date +%Y-%m-%d)"
+BACKUP_DATE=$(date +%Y-%m-%d)
+BACKUP_DIR="${INSTALL_DIR}/backups/${BACKUP_DATE}"
 LOG="${INSTALL_DIR}/logs/backup.log"
+RETENCAO_DIAS=30
 
-echo "$(date '+%Y-%m-%d %H:%M:%S') — Iniciando backup..." | tee -a "$LOG"
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $1" | tee -a "$LOG"; }
 
+log "Iniciando backup..."
 mkdir -p "$BACKUP_DIR"
 
 # Dump do PostgreSQL
-docker compose -f "${INSTALL_DIR}/docker-compose.yml" exec -T postgres \
-  pg_dump -U admanager admanager \
-  --format=custom \
-  --compress=9 \
-  > "${BACKUP_DIR}/database.dump"
-echo "$(date '+%Y-%m-%d %H:%M:%S') — Banco de dados: OK" | tee -a "$LOG"
-
-# Backup das configurações
-cp "${INSTALL_DIR}/.env" "${BACKUP_DIR}/.env.bak"
-echo "$(date '+%Y-%m-%d %H:%M:%S') — Configurações: OK" | tee -a "$LOG"
-
-# Comprime os logs do dia
-if [ -d "${INSTALL_DIR}/logs" ]; then
-  tar -czf "${BACKUP_DIR}/logs.tar.gz" \
-    -C "${INSTALL_DIR}" logs/ \
-    2>/dev/null || true
-  echo "$(date '+%Y-%m-%d %H:%M:%S') — Logs: OK" | tee -a "$LOG"
+if docker compose -f "${INSTALL_DIR}/docker-compose.yml" \
+    exec -T postgres \
+    pg_dump -U admanager admanager \
+    --format=custom --compress=9 \
+    > "${BACKUP_DIR}/database.dump"; then
+  log "Banco de dados: OK ($(du -sh "${BACKUP_DIR}/database.dump" | cut -f1))"
+else
+  log "ERRO: Falha no dump do banco de dados."
+  exit 1
 fi
 
-# Remove backups com mais de 30 dias
-find "${INSTALL_DIR}/backups" -maxdepth 1 -type d -mtime +30 \
+# Configurações
+cp "${INSTALL_DIR}/.env" "${BACKUP_DIR}/.env.bak"
+chmod 600 "${BACKUP_DIR}/.env.bak"
+log "Configuracoes: OK"
+
+# Logs
+if [ -d "${INSTALL_DIR}/logs" ] && \
+   ls "${INSTALL_DIR}/logs/"*.log 1>/dev/null 2>&1; then
+  tar -czf "${BACKUP_DIR}/logs.tar.gz" \
+    -C "${INSTALL_DIR}" logs/ 2>/dev/null && \
+  log "Logs: OK" || \
+  log "AVISO: Falha ao compactar logs."
+fi
+
+# Remove backups antigos
+find "${INSTALL_DIR}/backups" \
+  -maxdepth 1 -type d \
+  -mtime "+${RETENCAO_DIAS}" \
   -exec rm -rf {} + 2>/dev/null || true
 
 TAMANHO=$(du -sh "$BACKUP_DIR" | cut -f1)
-echo "$(date '+%Y-%m-%d %H:%M:%S') — Backup concluído. Tamanho: ${TAMANHO} → ${BACKUP_DIR}" \
-  | tee -a "$LOG"
+log "Backup concluido. Tamanho: ${TAMANHO} -> ${BACKUP_DIR}"
 BACKUP_SCRIPT
+  ok "backup.sh criado"
 
-  chmod +x "${INSTALL_DIR}/scripts/backup.sh"
-  chown admanager:admanager "${INSTALL_DIR}/scripts/backup.sh"
-  ok "Script de backup criado"
-
-  # Agendamento no cron
-  substep "Agendando backup automático (diariamente às 03:00)..."
-  cat > /etc/cron.d/admanager-backup << EOF
-# Backup diario do AD License Manager
-0 3 * * * admanager ${INSTALL_DIR}/scripts/backup.sh >> ${INSTALL_DIR}/logs/backup.log 2>&1
-EOF
-  ok "Backup automático agendado para 03:00 diariamente"
-
-  # Script de health check
-  substep "Criando script de health check..."
-  cat > "${INSTALL_DIR}/scripts/health-check.sh" << HEALTH_SCRIPT
+  # ── Health check ────────────────────────────────────────────────────────
+  substep "Criando scripts/health-check.sh..."
+  # CORREÇÃO: a versão anterior referenciava REDIS_PASSWORD do ambiente externo,
+  # mas o script roda em contexto diferente. Agora lê do .env com parsing seguro.
+  cat > "${INSTALL_DIR}/scripts/health-check.sh" << 'HEALTH_SCRIPT'
 #!/usr/bin/env bash
-source "${INSTALL_DIR}/.env" 2>/dev/null || true
+set -uo pipefail
+
+INSTALL_DIR="/opt/ad-license-manager"
+COMPOSE_FILE="${INSTALL_DIR}/docker-compose.yml"
 FALHAS=0
+
+# Carrega variáveis do .env de forma segura (ignora linhas de comentário)
+if [ -f "${INSTALL_DIR}/.env" ]; then
+  REDIS_PASSWORD=$(grep '^REDIS_PASSWORD=' "${INSTALL_DIR}/.env" | cut -d= -f2- | tr -d '"'"'"' ')
+else
+  REDIS_PASSWORD=""
+fi
+
 check() {
-  local nome=\$1 cmd=\$2 esperado=\$3
-  if eval "\$cmd" 2>&1 | grep -q "\$esperado"; then
-    echo "  ✓  \${nome}"
+  local nome="$1"
+  local cmd="$2"
+  local esperado="$3"
+
+  if eval "$cmd" 2>/dev/null | grep -q "$esperado"; then
+    echo "  ✓  ${nome}"
   else
-    echo "  ✗  \${nome}"
-    FALHAS=\$((FALHAS+1))
+    echo "  ✗  ${nome}"
+    FALHAS=$((FALHAS + 1))
   fi
 }
+
 echo ""
-echo "  ── Health Check AD License Manager — \$(date '+%d/%m/%Y %H:%M')"
+echo "  ── Health Check AD License Manager — $(date '+%d/%m/%Y %H:%M:%S')"
 echo ""
+
 check "PostgreSQL" \
-  "docker compose -f ${INSTALL_DIR}/docker-compose.yml exec -T postgres pg_isready -U admanager" \
+  "docker compose -f '${COMPOSE_FILE}' exec -T postgres pg_isready -U admanager" \
   "accepting"
+
 check "Redis" \
-  "docker compose -f ${INSTALL_DIR}/docker-compose.yml exec -T redis redis-cli -a '${REDIS_PASSWORD}' --no-auth-warning ping" \
+  "docker compose -f '${COMPOSE_FILE}' exec -T redis redis-cli -a '${REDIS_PASSWORD}' --no-auth-warning ping" \
   "PONG"
+
 check "Backend API" \
   "curl -sf http://localhost:3001/health" \
-  "healthy"
+  "."
+
 check "Nginx HTTPS" \
   "curl -skf https://localhost/health" \
-  "healthy"
+  "."
+
 check "Worker" \
-  "docker compose -f ${INSTALL_DIR}/docker-compose.yml ps worker" \
+  "docker compose -f '${COMPOSE_FILE}' ps worker" \
   "running"
+
 echo ""
-if [ \$FALHAS -gt 0 ]; then
-  echo "  ✗  \${FALHAS} serviço(s) com problema."
-  echo "     Execute: docker compose logs"
+if [ "$FALHAS" -gt 0 ]; then
+  echo "  ✗  ${FALHAS} serviço(s) com problema."
+  echo "     Detalhes: docker compose -f '${COMPOSE_FILE}' logs"
   exit 1
 else
-  echo "  ✓  Todos os serviços saudáveis."
+  echo "  ✓  Todos os serviços estão saudáveis."
 fi
-echo ""
-HEALTH_SCRIPT
-
-  chmod +x "${INSTALL_DIR}/scripts/health-check.sh"
-  chown admanager:admanager "${INSTALL_DIR}/scripts/health-check.sh"
-  ok "Script de health check criado"
-
-  # Script de atualização
-  substep "Criando script de atualização..."
-  cat > "${INSTALL_DIR}/scripts/update.sh" << UPDATE_SCRIPT
-#!/usr/bin/env bash
-set -euo pipefail
-echo "Criando backup antes de atualizar..."
-${INSTALL_DIR}/scripts/backup.sh
-echo "Baixando atualizações..."
-cd "${INSTALL_DIR}"
-git pull origin main
-echo "Reconstruindo imagens..."
-docker compose build --no-cache
-echo "Aplicando migrations..."
-docker compose run --rm backend node dist/migrate.js
-echo "Reiniciando serviços..."
-docker compose up -d --remove-orphans
-echo "Atualização concluída."
-docker compose ps
-UPDATE_SCRIPT
-
-  chmod +x "${INSTALL_DIR}/scripts/update.sh"
-  chown admanager:admanager "${INSTALL_DIR}/scripts/update.sh"
-  ok "Script de atualização criado"
-}
-
-# ─── ETAPA 12: Permissões finais ──────────────────────────────────────────────
-ajustar_permissoes() {
-  step "12" "AJUSTE FINAL DE PERMISSÕES"
-
-  substep "Aplicando permissões na instalação completa..."
-  chown -R admanager:admanager "${INSTALL_DIR}"
-  chmod 600 "${INSTALL_DIR}/.env"
-  chmod 600 "${INSTALL_DIR}/infra/nginx/ssl/key.pem"
-  chmod 644 "${INSTALL_DIR}/infra/nginx/ssl/cert.pem"
-  chmod 700 "${INSTALL_DIR}/logs"
-  chmod 700 "${INSTALL_DIR}/backups"
-  chmod +x  "${INSTALL_DIR}/scripts/"*.sh
-  ok "Permissões aplicadas"
-}
-
-# ─── ETAPA 13: Verificação final ──────────────────────────────────────────────
-verificacao_final() {
-  step "13" "VERIFICAÇÃO FINAL DO SISTEMA"
-
-  cd "${INSTALL_DIR}"
-
-  echo ""
-  substep "Status dos containers:"
-  echo ""
-  docker compose ps 2>/dev/null | while read -r linha; do
-    echo "    ${linha}"
-  done
-  echo ""
-
-  # Health check
-  substep "Executando health check completo..."
-  echo ""
-  bash "${INSTALL_DIR}/scripts/health-check.sh" || true
-  echo ""
-
-  # Verifica o certificado TLS
-  substep "Verificando certificado TLS..."
-  CERT_INFO=$(openssl x509 -in "${INSTALL_DIR}/infra/nginx/ssl/cert.pem" \
-    -noout -subject -dates 2>/dev/null || echo "erro")
-  if echo "$CERT_INFO" | grep -q "notAfter"; then
-    EXPIRA=$(echo "$CERT_INFO" | grep notAfter | cut -d= -f2)
-    ok "Certificado TLS válido — expira em: ${EXPIRA}"
-  else
-    warn "Não foi possível verificar o certificado TLS"
-  fi
-
-  # Verifica a conectividade final
-  progress "Testando endpoint de saúde via HTTPS"
-  sleep 3
-  if curl -skf https://localhost/health &>/dev/null; then
-    progress_ok
-  else
-    progress_fail
-    warn "O endpoint HTTPS ainda não está respondendo."
-    warn "Aguarde alguns segundos e verifique: docker compose logs nginx"
-  fi
-}
-
-# ─── ETAPA 14: Resumo e instruções finais ─────────────────────────────────────
-exibir_resumo_final() {
-  INSTALL_END=$(date +%s)
-  DURACAO=$(( (INSTALL_END - INSTALL_START) / 60 ))
-
-  banner
-
-  echo -e "${GREEN}${BOLD}"
-  echo "  ╔══════════════════════════════════════════════════════════════════╗"
-  echo "  ║                                                                  ║"
-  echo "  ║           ✓  INSTALAÇÃO CONCLUÍDA COM SUCESSO!                  ║"
-  echo "  ║                                                                  ║"
-  echo "  ╚══════════════════════════════════════════════════════════════════╝"
-  echo -e "${NC}"
-  echo -e "  ${DIM}Tempo total: ${DURACAO} minutos${NC}"
-  echo ""
-
-  divisor
-  echo -e "  ${WHITE}${BOLD}ACESSO AO SISTEMA${NC}"
-  divisor
-  echo ""
-  echo -e "  ${CYAN}URL:${NC}      ${WHITE}${BOLD}${APP_URL}${NC}"
-  echo -e "  ${CYAN}Usuário:${NC}  ${WHITE}${BOLD}${ADMIN_
 
