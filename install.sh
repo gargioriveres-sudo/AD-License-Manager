@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  AD License Manager — Instalador Completo e Autônomo
-#  Versão 2.1.0 — Julho de 2026
+#  Versão 2.1.1 — Julho de 2026
 #  Ubuntu Server 22.04 LTS / 24.04 LTS
 #
 #  Uso: sudo bash install.sh
@@ -28,7 +28,7 @@ set -euo pipefail
 IFS=$'\n\t'
 
 # ─── Constantes ───────────────────────────────────────────────────────────────
-readonly INSTALLER_VERSION="2.1.0"
+readonly INSTALLER_VERSION="2.1.1"
 readonly INSTALL_DIR="/opt/ad-license-manager"
 readonly INSTALL_LOG="/tmp/admanager-install-$(date +%Y%m%d-%H%M%S).log"
 readonly INSTALL_START=$(date +%s)
@@ -318,729 +318,826 @@ step_1_collect() {
   echo ""
   while true; do
     APP_DOMAIN=$(ask "Domínio da interface web" "admanager.empresa.com.br")
-    [ -z "$APP_DOMAIN" ]            && warn "Obrigatório."      && continue
+    [ -z "$APP_DOMAIN" ]            && warn "Obrigatório." && continue
     ! is_valid_domain "$APP_DOMAIN" && warn "Formato inválido." && continue
-    ok "Domínio: ${APP_DOMAIN}"
-    break
+    ok "Domínio: ${APP_DOMAIN}"; break
   done
 
   # ── 1.2 Active Directory ─────────────────────────────────────────────────
-  echo ""
-  div
+  echo ""; div
   echo -e "  ${WHITE}${BOLD}1.2  Active Directory${NC}"
   echo ""
-  info "Use ldaps:// (porta 636) para habilitar redefinição de senha."
+  info "Use ldaps:// (porta 636) para habilitar reset de senha."
   info "Use ldap://  (porta 389) somente se LDAPS não estiver disponível."
   echo ""
 
   while true; do
     AD_URL=$(ask "URL do Controlador de Domínio" "ldaps://dc01.empresa.com.br")
-    ! is_valid_ldap_url "$AD_URL" \
-      && warn "Formato inválido. Ex: ldaps://dc01.empresa.com.br" \
-      && continue
-    break
-  done
-
-  while true; do
-    AD_BASE_DN=$(ask "Base DN" "DC=empresa,DC=com,DC=br")
-    ! is_valid_base_dn "$AD_BASE_DN" \
-      && warn "Formato inválido. Ex: DC=empresa,DC=com,DC=br" \
-      && continue
-    break
-  done
-
-  while true; do
-    AD_USERNAME=$(ask "UPN da conta de serviço" "svc-admanager@empresa.com.br")
-    [ -n "$AD_USERNAME" ] && break
-    warn "Obrigatório."
-  done
-
-  while true; do
-    AD_PASSWORD=$(ask_secret "Senha da conta de serviço")
-    [ -n "$AD_PASSWORD" ] && break
-    warn "Obrigatório."
-  done
-
-  while true; do
-    AD_DOMAIN=$(ask "Domínio NetBIOS / UPN suffix" "empresa.com.br")
-    [ -n "$AD_DOMAIN" ] && break
-    warn "Obrigatório."
-  done
-
-  # Testa conectividade com o AD
-  echo ""
-  AD_HOST=$(echo "$AD_URL" | sed -E 's|ldaps?://||' | cut -d: -f1)
-  if echo "$AD_URL" | grep -qi "ldaps"; then
-    AD_PORT=$(echo "$AD_URL" | grep -oP ':\d+$' | tr -d ':')
-    AD_PORT="${AD_PORT:-636}"
-  else
-    AD_PORT=$(echo "$AD_URL" | grep -oP ':\d+$' | tr -d ':')
-    AD_PORT="${AD_PORT:-389}"
-  fi
-
-  pg "Testando conectividade com ${AD_HOST}:${AD_PORT}"
-  if nc -zw 5 "$AD_HOST" "$AD_PORT" 2>/dev/null; then
-    pg_ok
-    ok "Active Directory acessível"
-  else
-    pg_fail
-    warn "Não foi possível conectar a ${AD_HOST}:${AD_PORT}."
-    warn "Verifique endereço, porta e regras de firewall."
-    confirm "Continuar mesmo sem confirmar conectividade" "n" \
-      || fail "Conectividade com AD não confirmada. Corrija e execute novamente."
-  fi
-
-  # ── 1.3 Azure AD ─────────────────────────────────────────────────────────
-  echo ""
-  div
-  echo -e "  ${WHITE}${BOLD}1.3  Azure AD / Microsoft 365 ${DIM}(opcional — para licenças M365)${NC}"
-  echo ""
-
-  if confirm "Configurar integração com Microsoft 365" "n"; then
-    SETUP_GRAPH="s"
-    while true; do
-      AZURE_TENANT_ID=$(ask "Azure Tenant ID")
-      [ -n "$AZURE_TENANT_ID" ] && break
-      warn "Obrigatório."
-    done
-    while true; do
-      AZURE_CLIENT_ID=$(ask "Azure Client ID")
-      [ -n "$AZURE_CLIENT_ID" ] && break
-      warn "Obrigatório."
-    done
-    while true; do
-      AZURE_CLIENT_SECRET=$(ask_secret "Azure Client Secret")
-      [ -n "$AZURE_CLIENT_SECRET" ] && break
-      warn "Obrigatório."
-    done
-    ok "Azure AD configurado"
-  else
-    warn "Azure ignorado. Configure depois em Configurações → Azure / M365."
-  fi
-
-  # ── 1.4 Administrador ────────────────────────────────────────────────────
-  echo ""
-  div
-  echo -e "  ${WHITE}${BOLD}1.4  Conta de administrador do sistema${NC}"
-  echo ""
-
-  ADMIN_USER=$(ask "Usuário administrador" "admin")
-  ADMIN_USER="${ADMIN_USER:-admin}"
-
-  while true; do
-    ADMIN_EMAIL=$(ask "Email do administrador")
-    is_valid_email "$ADMIN_EMAIL" && break
-    warn "Formato inválido. Ex: ti@empresa.com.br"
-  done
-
-  echo ""
-  info "Senha: mín. 12 caracteres, maiúsculas, minúsculas, números e símbolos."
-  echo ""
-
-  while true; do
-    ADMIN_PASSWORD=$(ask_secret "Senha do administrador")
-    if [ "${#ADMIN_PASSWORD}" -lt 12 ]; then
-      warn "Mínimo 12 caracteres."
-      continue
+    ! is_valid_ldap_url "$AD_URL" && warn "Formato inválido (ex: ldaps://dc01.empresa.com.br)." && continue
+    AD_HOST=$(echo "$AD_URL" | sed -E 's/ldaps?:\/\///' | cut -d: -f1)
+    AD_PORT=$(echo "$AD_URL" | grep -oP ':\K\d+' || { [[ "$AD_URL" == *ldaps* ]] && echo "636" || echo "389"; })
+    pg "Testando conexão com o AD (${AD_HOST}:${AD_PORT})"
+    if nc -zv "$AD_HOST" "$AD_PORT" > /dev/null 2>&1; then
+      pg_ok; break
+    else
+      pg_fail; warn "Não foi possível conectar ao AD. Verifique o IP/hostname e a porta."
+      confirm "Continuar mesmo assim" "n" || { echo "Cancelado."; exit 0; }
+      break # Permite continuar mesmo com falha de conexão se o usuário aceitar
     fi
-    local STR
-    STR=$(password_strength "$ADMIN_PASSWORD")
-    echo -e "  ${DIM}Força: ${STR}${NC}"
-    local CONFIRM
-    CONFIRM=$(ask_secret "Confirme a senha")
-    if [ "$ADMIN_PASSWORD" = "$CONFIRM" ]; then
-      ok "Administrador: ${ADMIN_USER} (${ADMIN_EMAIL})"
-      break
-    fi
-    warn "Senhas não coincidem. Tente novamente."
   done
 
-  # ── 1.5 SMTP ─────────────────────────────────────────────────────────────
-  echo ""
-  div
-  echo -e "  ${WHITE}${BOLD}1.5  Email — SMTP ${DIM}(opcional)${NC}"
+  while true; do
+    AD_BASE_DN=$(ask "Base DN do AD" "DC=empresa,DC=com,DC=br")
+    ! is_valid_base_dn "$AD_BASE_DN" && warn "Formato inválido (ex: DC=empresa,DC=com,DC=br)." && continue
+    ok "Base DN: ${AD_BASE_DN}"; break
+  done
+
+  info "A conta de serviço deve ter permissões de leitura/escrita no AD."
+  info "Consulte o manual para as permissões mínimas necessárias."
   echo ""
 
-  if confirm "Configurar envio de emails" "n"; then
-    SETUP_SMTP="s"
-    SMTP_HOST=$(ask "Host SMTP" "smtp.empresa.com.br")
+  while true; do
+    AD_USERNAME=$(ask "Usuário da conta de serviço AD" "svc-admanager@empresa.com.br")
+    [ -z "$AD_USERNAME" ] && warn "Obrigatório." && continue
+    ok "Usuário AD: ${AD_USERNAME}"; break
+  done
+
+  while true; do
+    AD_PASSWORD=$(ask_secret "Senha da conta de serviço AD")
+    [ -z "$AD_PASSWORD" ] && warn "Obrigatório." && continue
+    ok "Senha AD: [oculta]"; break
+  done
+
+  AD_DOMAIN=$(ask "Nome do domínio NetBIOS (opcional)" "EMPRESA")
+
+  # ── 1.3 Administrador inicial ────────────────────────────────────────────
+  echo ""; div
+  echo -e "  ${WHITE}${BOLD}1.3  Administrador inicial do sistema${NC}"
+  echo ""
+  info "Este será o primeiro usuário com acesso total ao AD License Manager."
+  info "A senha será solicitada no primeiro login."
+  echo ""
+
+  while true; do
+    ADMIN_USER=$(ask "Nome de usuário" "admin")
+    [ -z "$ADMIN_USER" ] && warn "Obrigatório." && continue
+    ok "Usuário Admin: ${ADMIN_USER}"; break
+  done
+
+  while true; do
+    ADMIN_EMAIL=$(ask "Email do administrador" "admin@empresa.com.br")
+    ! is_valid_email "$ADMIN_EMAIL" && warn "Formato de email inválido." && continue
+    ok "Email Admin: ${ADMIN_EMAIL}"; break
+  done
+
+  # ── 1.4 Integração Azure AD / Microsoft 365 ──────────────────────────────
+  echo ""; div
+  echo -e "  ${WHITE}${BOLD}1.4  Integração Azure AD / Microsoft 365${NC}"
+  echo ""
+  info "Necessário para gerenciar licenças M365, MFA e sessões."
+  info "Consulte o manual para criar o App Registration no Azure AD."
+  echo ""
+
+  if confirm "Deseja configurar a integração com Azure AD / M365 agora" "s"; then
+    SETUP_GRAPH="y"
+    while true; do
+      AZURE_TENANT_ID=$(ask "Tenant ID (Directory ID)")
+      [ -z "$AZURE_TENANT_ID" ] && warn "Obrigatório." && continue
+      ok "Tenant ID: [oculto]"; break
+    done
+    while true; do
+      AZURE_CLIENT_ID=$(ask "Client ID (Application ID)")
+      [ -z "$AZURE_CLIENT_ID" ] && warn "Obrigatório." && continue
+      ok "Client ID: [oculto]"; break
+    done
+    while true; do
+      AZURE_CLIENT_SECRET=$(ask_secret "Client Secret (Valor do segredo)")
+      [ -z "$AZURE_CLIENT_SECRET" ] && warn "Obrigatório." && continue
+      ok "Client Secret: [oculto]"; break
+    done
+  else
+    info "Integração Azure AD / M365 será ignorada."
+  fi
+
+  # ── 1.5 Configuração de SMTP ─────────────────────────────────────────────
+  echo ""; div
+  echo -e "  ${WHITE}${BOLD}1.5  Configuração de SMTP${NC}"
+  echo ""
+  info "Necessário para envio de emails (alertas, relatórios, etc.)."
+  echo ""
+
+  if confirm "Deseja configurar SMTP agora" "s"; then
+    SETUP_SMTP="y"
+    while true; do
+      SMTP_HOST=$(ask "Servidor SMTP")
+      [ -z "$SMTP_HOST" ] && warn "Obrigatório." && continue
+      ok "Servidor SMTP: ${SMTP_HOST}"; break
+    done
     SMTP_PORT=$(ask "Porta SMTP" "587")
-    SMTP_SECURE=$(ask "TLS obrigatório — true para porta 465" "false")
-    SMTP_USER=$(ask "Usuário SMTP (em branco para relay anônimo)")
-    [ -n "$SMTP_USER" ] && SMTP_PASS=$(ask_secret "Senha SMTP")
-    SMTP_FROM=$(ask "Remetente" "AD Manager <noreply@${APP_DOMAIN}>")
-    ok "SMTP: ${SMTP_HOST}:${SMTP_PORT}"
-  else
-    SMTP_FROM="AD Manager <noreply@${APP_DOMAIN}>"
-    warn "SMTP ignorado. Configure depois em Configurações → Notificações."
-  fi
-
-  # ── 1.6 Microsoft Teams ───────────────────────────────────────────────────
-  echo ""
-  div
-  echo -e "  ${WHITE}${BOLD}1.6  Microsoft Teams ${DIM}(opcional)${NC}"
-  echo ""
-  info "Para criar o Webhook: canal → ··· → Conectores → Incoming Webhook → Criar"
-  echo ""
-
-  if confirm "Configurar alertas no Microsoft Teams" "n"; then
-    SETUP_TEAMS="s"
+    if confirm "Usar conexão segura (TLS/SSL)" "s"; then
+      SMTP_SECURE="true"
+    else
+      SMTP_SECURE="false"
+    fi
+    SMTP_USER=$(ask "Usuário SMTP (opcional)")
+    if [ -n "$SMTP_USER" ]; then
+      SMTP_PASS=$(ask_secret "Senha SMTP")
+    fi
     while true; do
-      TEAMS_WEBHOOK_URL=$(ask "URL do Webhook")
-      [[ "$TEAMS_WEBHOOK_URL" =~ ^https:// ]] && break
-      warn "URL deve começar com https://"
+      SMTP_FROM=$(ask "Email de remetente" "admanager@empresa.com.br")
+      ! is_valid_email "$SMTP_FROM" && warn "Formato de email inválido." && continue
+      ok "Remetente: ${SMTP_FROM}"; break
     done
-    ok "Microsoft Teams configurado"
   else
-    warn "Teams ignorado. Configure depois em Configurações."
+    info "Configuração SMTP será ignorada."
   fi
 
-  # ── 1.7 Certificado TLS ───────────────────────────────────────────────────
+  # ── 1.6 Configuração de Alertas no Microsoft Teams ──────────────────────
+  echo ""; div
+  echo -e "  ${WHITE}${BOLD}1.6  Alertas no Microsoft Teams${NC}"
   echo ""
-  div
-  echo -e "  ${WHITE}${BOLD}1.7  Certificado TLS${NC}"
+  info "Receba notificações críticas diretamente em um canal do Teams."
+  info "Crie um conector 'Webhook de Entrada' no Teams para obter a URL."
   echo ""
-  echo -e "   ${GREEN}1)${NC} Let's Encrypt   — gratuito, renovação automática (requer porta 80 pública)"
-  echo -e "   ${GREEN}2)${NC} PKI corporativa — self-signed temporário; substitua os arquivos depois"
-  echo -e "   ${GREEN}3)${NC} Self-signed     — para ambientes internos e testes"
+
+  if confirm "Deseja configurar alertas no Microsoft Teams agora" "n"; then
+    SETUP_TEAMS="y"
+    while true; do
+      TEAMS_WEBHOOK_URL=$(ask "URL do Webhook do Teams")
+      [ -z "$TEAMS_WEBHOOK_URL" ] && warn "Obrigatório." && continue
+      [[ "$TEAMS_WEBHOOK_URL" == https://outlook.office.com/webhook/* ]] \
+        || warn "URL inválida. Deve começar com 'https://outlook.office.com/webhook/'." && continue
+      ok "Webhook Teams: [oculto]"; break
+    done
+  else
+    info "Alertas no Teams serão ignorados."
+  fi
+
+  # ── 1.7 Certificado TLS ──────────────────────────────────────────────────
+  echo ""; div
+  echo -e "  ${WHITE}${BOLD}1.7  Certificado TLS (HTTPS)${NC}"
+  echo ""
+  info "O sistema precisa de um certificado TLS para HTTPS."
+  echo ""
+  echo "  1) Let's Encrypt (gratuito, automático, requer porta 80/443 aberta para internet)"
+  echo "  2) PKI Corporativa (você fornecerá os arquivos .pem após a instalação)"
+  echo "  3) Auto-assinado (self-signed, para testes ou ambientes internos sem PKI)"
   echo ""
 
   while true; do
-    CERT_OPCAO=$(ask "Tipo de certificado" "3")
-    case "$CERT_OPCAO" in
-      1|2|3) break ;;
-      *) warn "Digite 1, 2 ou 3." ;;
-    esac
+    CERT_OPCAO=$(ask "Escolha uma opção" "1")
+    [[ "$CERT_OPCAO" =~ ^[1-3]$ ]] && break
+    warn "Opção inválida. Escolha 1, 2 ou 3."
   done
 
-  # ── Resumo de confirmação ─────────────────────────────────────────────────
-  banner
-  echo -e "  ${WHITE}${BOLD}RESUMO — CONFIRME ANTES DE PROSSEGUIR${NC}"
-  echo ""
-  div
-  echo ""
-  echo -e "  ${CYAN}Aplicação${NC}"
-  echo -e "    URL:              https://${APP_DOMAIN}"
-  echo -e "    IP do servidor:   ${SERVER_IP}"
-  echo ""
-  echo -e "  ${CYAN}Active Directory${NC}"
-  echo -e "    URL:              ${AD_URL}"
-  echo -e "    Base DN:          ${AD_BASE_DN}"
-  echo -e "    Conta de serviço: ${AD_USERNAME}"
-  echo -e "    Domínio:          ${AD_DOMAIN}"
-  echo ""
-  echo -e "  ${CYAN}Microsoft 365${NC}"
-  if [ "$SETUP_GRAPH" = "s" ]; then
-    echo -e "    Integração:       ${GREEN}Habilitada${NC} — Tenant: ${AZURE_TENANT_ID}"
-  else
-    echo -e "    Integração:       ${DIM}Não configurada${NC}"
-  fi
-  echo ""
-  echo -e "  ${CYAN}Administrador${NC}"
-  echo -e "    Usuário:          ${ADMIN_USER}"
-  echo -e "    Email:            ${ADMIN_EMAIL}"
-  echo ""
-  echo -e "  ${CYAN}Notificações${NC}"
-  if [ "$SETUP_SMTP" = "s" ]; then
-    echo -e "    SMTP:             ${GREEN}${SMTP_HOST}:${SMTP_PORT}${NC}"
-  else
-    echo -e "    SMTP:             ${DIM}Não configurado${NC}"
-  fi
-  if [ "$SETUP_TEAMS" = "s" ]; then
-    echo -e "    Teams:            ${GREEN}Habilitado${NC}"
-  else
-    echo -e "    Teams:            ${DIM}Não configurado${NC}"
-  fi
-  echo ""
-  echo -e "  ${CYAN}Certificado TLS${NC}"
-  case "$CERT_OPCAO" in
-    1) echo -e "    Tipo:             ${GREEN}Let's Encrypt${NC}" ;;
-    2) echo -e "    Tipo:             ${YELLOW}PKI corporativa (self-signed temporário)${NC}" ;;
-    3) echo -e "    Tipo:             ${DIM}Self-signed (10 anos)${NC}" ;;
-  esac
-  echo ""
-  div
-  echo ""
-  confirm "Iniciar a instalação com estas configurações" "s" \
-    || { echo "Cancelado. Execute novamente para reiniciar."; exit 0; }
+  ok "Coleta de informações concluída."
+  pause
 }
 
 # =============================================================================
 #  ETAPA 2 — PREPARAÇÃO DO SISTEMA
 # =============================================================================
-step_2_prepare() {
+step_2_prepare_system() {
   step "2" "PREPARAÇÃO DO SISTEMA"
 
-  sub "Atualizando lista de pacotes..."
-  q apt-get update -qq
-  ok "Lista de pacotes atualizada"
+  sub "Atualizando pacotes do sistema..."
+  q apt-get update
+  q apt-get upgrade -y
+  ok "Pacotes atualizados"
 
   sub "Instalando dependências essenciais..."
-  q apt-get install -y -qq \
-    curl wget git openssl netcat-openbsd \
-    python3 python3-pip jq \
-    ca-certificates gnupg lsb-release \
-    apt-transport-https software-properties-common \
-    cron logrotate unzip
+  q apt-get install -y \
+    curl git openssl netcat-openbsd python3-apt python3-pip jq unzip \
+    ufw fail2ban auditd chrony
   ok "Dependências instaladas"
 
   sub "Criando usuário de serviço '${SERVICE_USER}'..."
-  if ! id "$SERVICE_USER" &>/dev/null; then
-    useradd --system \
-      --shell /usr/sbin/nologin \
-      --home-dir "${INSTALL_DIR}" \
-      --create-home \
-      --comment "AD License Manager service account" \
-      "$SERVICE_USER"
+  if ! id -u "$SERVICE_USER" > /dev/null 2>&1; then
+    q useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
     ok "Usuário '${SERVICE_USER}' criado"
   else
     ok "Usuário '${SERVICE_USER}' já existe"
   fi
 
-  sub "Criando estrutura de diretórios..."
-  local dirs=(
-    "${INSTALL_DIR}"
-    "${INSTALL_DIR}/logs"
-    "${INSTALL_DIR}/backups"
-    "${INSTALL_DIR}/scripts"
-    "${INSTALL_DIR}/infra/nginx/ssl"
-    "${INSTALL_DIR}/infra/nginx/conf.d"
-    "${INSTALL_DIR}/data/postgres"
-    "${INSTALL_DIR}/data/redis"
-  )
-  for d in "${dirs[@]}"; do
-    mkdir -p "$d"
-    chown "${SERVICE_USER}:${SERVICE_USER}" "$d"
-  done
-  ok "Estrutura de diretórios criada"
+  sub "Criando diretórios de instalação e dados..."
+  q mkdir -p "${INSTALL_DIR}/logs" "${INSTALL_DIR}/backups" "${INSTALL_DIR}/scripts"
+  q chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}"
+  q chmod 750 "${INSTALL_DIR}"
+  ok "Diretórios criados e permissões configuradas"
 
-  sub "Otimizando parâmetros do kernel..."
-  cat > /etc/sysctl.d/99-admanager.conf << 'EOF'
-net.core.somaxconn = 65535
-net.ipv4.tcp_max_syn_backlog = 65535
-net.ipv4.ip_local_port_range = 1024 65535
+  sub "Configurando limites do kernel (sysctl)..."
+  cat << EOF | q tee /etc/sysctl.d/99-admanager.conf
+# AD License Manager otimizacoes e seguranca
 net.ipv4.tcp_tw_reuse = 1
-net.ipv4.tcp_fin_timeout = 15
+net.ipv4.tcp_fin_timeout = 30
+net.ipv4.tcp_keepalive_time = 600
+net.ipv4.tcp_keepalive_intvl = 60
+net.ipv4.tcp_keepalive_probes = 5
+net.core.somaxconn = 65535
 net.core.netdev_max_backlog = 65535
-vm.overcommit_memory = 1
-vm.swappiness = 10
-fs.file-max = 2097152
+net.ipv4.ip_local_port_range = 1024 65535
+fs.inotify.max_user_watches = 524288
 EOF
   q sysctl --system
-  ok "Parâmetros do kernel aplicados"
-
-  sub "Configurando limites de recursos do sistema..."
-  cat >> /etc/security/limits.conf << EOF
-# AD License Manager
-${SERVICE_USER} soft nofile 65536
-${SERVICE_USER} hard nofile 65536
-${SERVICE_USER} soft nproc  65536
-${SERVICE_USER} hard nproc  65536
-EOF
-  ok "Limites de recursos configurados"
-
-  sub "Configurando rotação de logs..."
-  cat > /etc/logrotate.d/admanager << EOF
-${INSTALL_DIR}/logs/*.log {
-  daily
-  rotate 30
-  compress
-  delaycompress
-  missingok
-  notifempty
-  copytruncate
-  dateext
-  dateformat -%Y%m%d
-}
-EOF
-  ok "Rotação de logs configurada (30 dias, compressão diária)"
+  ok "Limites do kernel configurados"
 }
 
 # =============================================================================
-#  ETAPA 3 — SEGURANÇA (UFW, FAIL2BAN, AUDITD, NTP, SSH)
+#  ETAPA 3 — SEGURANÇA E NTP
 # =============================================================================
 step_3_security() {
-  step "3" "CONFIGURAÇÃO DE SEGURANÇA"
+  step "3" "SEGURANÇA E NTP"
 
-  # ── UFW ───────────────────────────────────────────────────────────────────
-  sub "Instalando e configurando UFW..."
-  q apt-get install -y -qq ufw
-  q ufw --force reset
+  # ── UFW ──────────────────────────────────────────────────────────────────
+  sub "Configurando UFW (firewall)..."
   q ufw default deny incoming
   q ufw default allow outgoing
-  q ufw allow 22/tcp    comment "SSH - administracao"
-  q ufw allow 80/tcp    comment "AD Manager - HTTP redirect"
-  q ufw allow 443/tcp   comment "AD Manager - HTTPS"
-  q ufw deny  3001/tcp  comment "Backend - somente Docker interno"
-  q ufw deny  5432/tcp  comment "PostgreSQL - somente Docker interno"
-  q ufw deny  6379/tcp  comment "Redis - somente Docker interno"
-  q ufw deny  3000/tcp  comment "Frontend dev - somente Docker interno"
-  echo "y" | q ufw enable
-  ok "UFW configurado — portas 22, 80 e 443 abertas; internas bloqueadas"
+  q ufw allow ssh comment "Permitir SSH"
+  q ufw allow http comment "Permitir HTTP (redirecionamento)"
+  q ufw allow https comment "Permitir HTTPS"
+  q ufw --force enable
+  ok "UFW configurado e habilitado"
 
-  # ── fail2ban ──────────────────────────────────────────────────────────────
-  sub "Instalando e configurando fail2ban..."
-  q apt-get install -y -qq fail2ban
-
-  cat > /etc/fail2ban/jail.local << 'EOF'
-[DEFAULT]
-bantime  = 7200
-findtime = 600
-maxretry = 3
-backend  = systemd
-
+  # ── fail2ban ─────────────────────────────────────────────────────────────
+  sub "Configurando fail2ban..."
+  cat << EOF | q tee /etc/fail2ban/jail.local
 [sshd]
-enabled  = true
-port     = ssh
-logpath  = %(sshd_log)s
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
 maxretry = 3
-bantime  = 86400
-
-[nginx-http-auth]
-enabled  = true
-port     = http,https
-logpath  = /var/log/nginx/error.log
-maxretry = 5
-
-[nginx-limit-req]
-enabled  = true
-port     = http,https
-logpath  = /var/log/nginx/error.log
-maxretry = 10
+bantime = 7200
 EOF
-
   q systemctl enable fail2ban
   q systemctl restart fail2ban
-  ok "fail2ban configurado (SSH: 3 tentativas → 24h ban)"
+  ok "fail2ban configurado e habilitado"
 
-  # ── auditd ────────────────────────────────────────────────────────────────
-  sub "Instalando e configurando auditd..."
-  q apt-get install -y -qq auditd audispd-plugins
-
-  cat > /etc/audit/rules.d/admanager.rules << EOF
-# AD License Manager — regras de auditoria
--w ${INSTALL_DIR}/.env -p rwxa -k admanager-config
--w ${INSTALL_DIR}/scripts/ -p rwxa -k admanager-scripts
--w /etc/systemd/system/ad-license-manager.service -p rwxa -k admanager-service
--w /etc/docker/daemon.json -p rwxa -k docker-config
--a always,exit -F arch=b64 -S execve -F uid=0 -k root-commands
+  # ── auditd ───────────────────────────────────────────────────────────────
+  sub "Configurando auditd..."
+  cat << EOF | q tee /etc/audit/rules.d/admanager.rules
+# AD License Manager - Monitoramento de seguranca
+-w /opt/ad-license-manager/.env -p rwxa -k admanager-config
+-w /opt/ad-license-manager/infra/nginx/ssl/key.pem -p rwxa -k admanager-tls-key
+-w /etc/systemd/system/ad-license-manager.service -p rwxa -k admanager-systemd
+-w /etc/cron.d/admanager -p rwxa -k admanager-cron
+-w /usr/local/bin/admanager-renew-cert.sh -p rwxa -k admanager-cert-script
 EOF
-
+  q augenrules --load
   q systemctl enable auditd
   q systemctl restart auditd
-  ok "auditd configurado com regras para arquivos críticos"
+  ok "auditd configurado e habilitado"
 
-  # ── NTP / chrony ──────────────────────────────────────────────────────────
-  sub "Instalando e configurando sincronização NTP (chrony)..."
-  q apt-get install -y -qq chrony
-
-  cat > /etc/chrony/chrony.conf << 'EOF'
-pool time.google.com     iburst maxsources 4
-pool ntp.ubuntu.com      iburst maxsources 3
-pool time.cloudflare.com iburst maxsources 2
-driftfile /var/lib/chrony/drift
-makestep 1.0 3
-rtcsync
-logdir /var/log/chrony
-EOF
-
+  # ── chrony (NTP) ─────────────────────────────────────────────────────────
+  sub "Configurando chrony (NTP)..."
   q systemctl enable chrony
   q systemctl restart chrony
-  ok "chrony configurado (Google, Cloudflare, Ubuntu NTP pools)"
+  q timedatectl set-ntp true
+  ok "chrony configurado e habilitado"
 
-  # ── Hardening SSH ─────────────────────────────────────────────────────────
-  sub "Aplicando hardening no SSH..."
-  local SSHD_CONF="/etc/ssh/sshd_config"
-
-  declare -A SSH_SETTINGS=(
-    ["PermitRootLogin"]="no"
-    ["PasswordAuthentication"]="yes"
-    ["MaxAuthTries"]="3"
-    ["LoginGraceTime"]="30"
-    ["ClientAliveInterval"]="300"
-    ["ClientAliveCountMax"]="2"
-    ["X11Forwarding"]="no"
-    ["AllowTcpForwarding"]="no"
-    ["Protocol"]="2"
-  )
-
-  for key in "${!SSH_SETTINGS[@]}"; do
-    if grep -q "^${key}" "$SSHD_CONF"; then
-      sed -i "s/^${key}.*/${key} ${SSH_SETTINGS[$key]}/" "$SSHD_CONF"
-    else
-      echo "${key} ${SSH_SETTINGS[$key]}" >> "$SSHD_CONF"
-    fi
-  done
-
-  q sshd -t && q systemctl reload sshd \
-    && ok "SSH hardened (root desabilitado, máx. 3 tentativas)" \
-    || warn "SSH não recarregado — verifique sshd_config manualmente"
+  # ── SSH Hardening ────────────────────────────────────────────────────────
+  sub "Configurando SSH hardening..."
+  q sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+  q sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/sshd_config
+  q sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
+  q sed -i 's/^#\?UsePAM.*/UsePAM yes/' /etc/ssh/sshd_config # Garante PAM para outros métodos
+  q systemctl restart sshd
+  warn "Autenticação por senha SSH desabilitada. Use chaves SSH."
+  warn "Login root via SSH desabilitado."
+  ok "SSH hardening aplicado"
 }
 
 # =============================================================================
-#  ETAPA 4 — INSTALAÇÃO DO DOCKER ENGINE
+#  ETAPA 4 — DOCKER ENGINE E COMPOSE PLUGIN
 # =============================================================================
 step_4_docker() {
-  step "4" "INSTALAÇÃO DO DOCKER ENGINE"
+  step "4" "DOCKER ENGINE E COMPOSE PLUGIN"
 
-  if command -v docker &>/dev/null && docker compose version &>/dev/null; then
-    local DV CV
-    DV=$(docker --version        | grep -oP '\d+\.\d+\.\d+' | head -1)
-    CV=$(docker compose version  | grep -oP '\d+\.\d+\.\d+' | head -1)
-    ok "Docker ${DV} já instalado"
-    ok "Compose Plugin ${CV} já instalado"
-    q systemctl enable docker
-    q systemctl start  docker
-    usermod -aG docker "$SERVICE_USER"
-    return 0
-  fi
-
-  sub "Removendo versões antigas do Docker..."
-  q apt-get remove -y -qq \
-    docker docker-engine docker.io containerd runc \
-    docker-compose docker-compose-plugin 2>/dev/null || true
+  sub "Removendo versões antigas do Docker (se existirem)..."
+  q apt-get remove -y docker docker-engine docker.io containerd runc || true
   ok "Versões antigas removidas"
 
+  sub "Instalando dependências do Docker..."
+  q apt-get install -y ca-certificates curl gnupg
+  ok "Dependências instaladas"
+
   sub "Adicionando chave GPG oficial do Docker..."
-  install -m 0755 -d /etc/apt/keyrings
-  rm -f /etc/apt/keyrings/docker.gpg
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg 2>>"$INSTALL_LOG" \
-    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-  chmod a+r /etc/apt/keyrings/docker.gpg
+  q install -m 0755 -d /etc/apt/keyrings
+  q rm -f /etc/apt/keyrings/docker.gpg
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | q gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  q chmod a+r /etc/apt/keyrings/docker.gpg
   ok "Chave GPG adicionada"
 
-  sub "Adicionando repositório oficial do Docker..."
-  local ARCH
-  ARCH=$(dpkg --print-architecture)
-  cat > /etc/apt/sources.list.d/docker.list << EOF
-deb [arch=${ARCH} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${UBUNTU_CODENAME} stable
-EOF
-  q apt-get update -qq
-  ok "Repositório Docker adicionado (${UBUNTU_CODENAME} / ${ARCH})"
+  sub "Adicionando repositório do Docker..."
+  echo \
+    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+    ${UBUNTU_CODENAME} stable" | q tee /etc/apt/sources.list.d/docker.list > /dev/null
+  q apt-get update
+  ok "Repositório Docker adicionado"
 
-  sub "Instalando Docker Engine, CLI e Compose Plugin..."
-  q apt-get install -y -qq \
-    docker-ce \
-    docker-ce-cli \
-    containerd.io \
-    docker-buildx-plugin \
-    docker-compose-plugin
-  ok "Docker instalado"
+  sub "Instalando Docker Engine e Compose Plugin..."
+  q apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  ok "Docker Engine e Compose Plugin instalados"
 
-  sub "Configurando Docker daemon..."
-  mkdir -p /etc/docker
-  cat > /etc/docker/daemon.json << 'EOF'
+  sub "Configurando Docker para iniciar com o sistema..."
+  q systemctl enable docker.service
+  q systemctl enable containerd.service
+  ok "Docker configurado para iniciar com o sistema"
+
+  sub "Adicionando '${SERVICE_USER}' ao grupo 'docker'..."
+  q usermod -aG docker "$SERVICE_USER"
+  ok "Usuário '${SERVICE_USER}' adicionado ao grupo 'docker'"
+
+  sub "Configurando daemon do Docker (otimizações e segurança)..."
+  cat << EOF | q tee /etc/docker/daemon.json
 {
-  "log-driver":        "json-file",
-  "log-opts":          { "max-size": "50m", "max-file": "5" },
-  "storage-driver":    "overlay2",
-  "live-restore":      true,
-  "userland-proxy":    false,
-  "no-new-privileges": true,
-  "default-ulimits": {
-    "nofile": { "Name": "nofile", "Hard": 65536, "Soft": 65536 }
-  }
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "5"
+  },
+  "live-restore": true,
+  "default-address-pools": [
+    {
+      "base": "172.20.0.0/16",
+      "size": 24
+    }
+  ]
 }
 EOF
-
-  q systemctl enable docker
-  q systemctl start  docker
-  ok "Docker daemon iniciado e configurado"
-
-  usermod -aG docker "$SERVICE_USER"
-  ok "Usuário '${SERVICE_USER}' adicionado ao grupo docker"
-
-  sub "Verificando funcionamento do Docker..."
-  q docker run --rm hello-world \
-    && ok "Docker funcionando corretamente" \
-    || fail "Docker instalado mas não está funcionando. Verifique: ${INSTALL_LOG}"
-
-  local DV CV
-  DV=$(docker --version        | grep -oP '\d+\.\d+\.\d+' | head -1)
-  CV=$(docker compose version  | grep -oP '\d+\.\d+\.\d+' | head -1)
-  ok "Docker ${DV} · Compose Plugin ${CV}"
+  q systemctl restart docker
+  ok "Daemon do Docker configurado e reiniciado"
 }
 
 # =============================================================================
 #  ETAPA 5 — DOWNLOAD DO CÓDIGO-FONTE
 # =============================================================================
-step_5_clone() {
+step_5_download_code() {
   step "5" "DOWNLOAD DO CÓDIGO-FONTE"
 
+  sub "Clonando repositório do AD License Manager..."
   if [ -d "${INSTALL_DIR}/.git" ]; then
-    sub "Repositório existente encontrado. Atualizando..."
+    warn "Repositório já existe. Pulando clone."
     cd "${INSTALL_DIR}"
     q git fetch origin
     q git reset --hard origin/main
-    ok "Código atualizado para a versão mais recente"
   else
-    sub "Clonando repositório em ${INSTALL_DIR}..."
-    local TMP
-    TMP=$(mktemp -d)
-    if q git clone "$REPO_URL" "$TMP"; then
-      cp -a "${TMP}/." "${INSTALL_DIR}/"
-      rm -rf "$TMP"
-      ok "Repositório clonado com sucesso"
-    else
-      rm -rf "$TMP"
-      fail "Falha ao clonar ${REPO_URL}. Verifique a URL e o acesso."
-    fi
+    q git clone "$REPO_URL" "$INSTALL_DIR"
   fi
+  ok "Código-fonte baixado para ${INSTALL_DIR}"
 
-  find "${INSTALL_DIR}" -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
-  chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}"
-  ok "Permissões dos scripts configuradas"
+  sub "Verificando arquivos essenciais..."
+  [ -f "${INSTALL_DIR}/docker-compose.yml" ] || fail "docker-compose.yml não encontrado."
+  [ -d "${INSTALL_DIR}/backend" ]             || fail "Diretório 'backend' não encontrado."
+  [ -d "${INSTALL_DIR}/frontend" ]            || fail "Diretório 'frontend' não encontrado."
+  ok "Arquivos essenciais verificados"
 }
 
 # =============================================================================
-#  ETAPA 6 — ARQUIVO DE CONFIGURAÇÃO (.env)
+#  ETAPA 6 — GERAÇÃO DO ARQUIVO .ENV
 # =============================================================================
-step_6_env() {
-  step "6" "GERAÇÃO DO ARQUIVO DE CONFIGURAÇÃO"
+step_6_generate_env() {
+  step "6" "GERAÇÃO DO ARQUIVO .ENV"
 
-  sub "Gerando segredos criptográficos aleatórios..."
+  sub "Gerando segredos criptográficos..."
   DB_PASSWORD=$(gen_password)
   REDIS_PASSWORD=$(gen_password)
   JWT_SECRET=$(gen_secret)
   JWT_REFRESH_SECRET=$(gen_secret)
   ENCRYPTION_KEY=$(gen_hex)
-  ok "Segredos gerados (${#JWT_SECRET} chars JWT · 64 bytes ENCRYPTION_KEY)"
+  ok "Segredos gerados"
 
-  sub "Escrevendo ${INSTALL_DIR}/.env..."
-  cat > "${INSTALL_DIR}/.env" << EOF
-# ══════════════════════════════════════════════════════════════════════════════
-#  AD License Manager — Configuração do Ambiente
-#  Gerado em: $(date '+%d/%m/%Y às %H:%M:%S') pelo instalador v${INSTALLER_VERSION}
-#  ATENÇÃO: Arquivo sensível. Permissão 600. Não commite no repositório.
-# ══════════════════════════════════════════════════════════════════════════════
+  sub "Criando arquivo .env..."
+  cat << EOF > "${INSTALL_DIR}/.env"
+# ════════════════════════════════════════════════════════════════════════════
+#  AD License Manager — Variáveis de Ambiente
+#  Gerado pelo instalador v${INSTALLER_VERSION} em $(date '+%Y-%m-%d %H:%M:%S')
+# ════════════════════════════════════════════════════════════════════════════
 
-# ── Aplicação ─────────────────────────────────────────────────────────────────
-APP_DOMAIN=${APP_DOMAIN}
-APP_URL=https://${APP_DOMAIN}
+# ── Configurações Gerais ──────────────────────────────────────────────────────
 NODE_ENV=production
-PORT=3001
-ALLOWED_ORIGINS=https://${APP_DOMAIN}
-SERVER_IP=${SERVER_IP}
+APP_URL=https://${APP_DOMAIN}
+PORT=3000
+TZ=America/Sao_Paulo # Fuso horário do servidor
 
-# ── Banco de dados ────────────────────────────────────────────────────────────
-DB_USER=admanager
-DB_PASSWORD=${DB_PASSWORD}
-DB_NAME=admanager
-DATABASE_URL=postgresql://admanager:${DB_PASSWORD}@postgres:5432/admanager
-
-# ── Redis ─────────────────────────────────────────────────────────────────────
-REDIS_HOST=redis
-REDIS_PORT=6379
-REDIS_PASSWORD=${REDIS_PASSWORD}
-REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
-
-# ── JWT ───────────────────────────────────────────────────────────────────────
-JWT_SECRET=${JWT_SECRET}
-JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
-JWT_EXPIRES_IN=15m
-JWT_REFRESH_EXPIRES_IN=7d
-
-# ── Criptografia ──────────────────────────────────────────────────────────────
-ENCRYPTION_KEY=${ENCRYPTION_KEY}
-
-# ── Active Directory ──────────────────────────────────────────────────────────
+# ── Active Directory (LDAP/LDAPS) ─────────────────────────────────────────────
 AD_URL=${AD_URL}
 AD_BASE_DN=${AD_BASE_DN}
 AD_USERNAME=${AD_USERNAME}
 AD_PASSWORD=${AD_PASSWORD}
-AD_DOMAIN=${AD_DOMAIN}
+AD_DOMAIN=${AD_DOMAIN} # Nome NetBIOS do domínio (opcional)
+AD_SYNC_INTERVAL_MINUTES=60 # Intervalo de sincronização do AD
 
-# ── Azure AD / Microsoft Graph ────────────────────────────────────────────────
+# ── Banco de Dados (PostgreSQL) ───────────────────────────────────────────────
+DATABASE_URL=postgresql://admanager:${DB_PASSWORD}@postgres:5432/admanager?schema=public
+DB_PASSWORD=${DB_PASSWORD} # Senha do usuario admanager no PostgreSQL
+
+# ── Cache e Filas (Redis) ─────────────────────────────────────────────────────
+REDIS_URL=redis://redis:6379
+REDIS_PASSWORD=${REDIS_PASSWORD} # Senha do Redis
+
+# ── Autenticação e Segurança ──────────────────────────────────────────────────
+JWT_SECRET=${JWT_SECRET}
+JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
+ENCRYPTION_KEY=${ENCRYPTION_KEY} # Chave para criptografia de dados sensiveis (ex: senhas de servico)
+SESSION_SECRET=${JWT_SECRET} # Usado para criptografar cookies de sessao
+
+# ── Integração Azure AD / Microsoft 365 (Microsoft Graph API) ─────────────────
+EOF
+
+  if [ "$SETUP_GRAPH" = "y" ]; then
+    cat << EOF >> "${INSTALL_DIR}/.env"
 AZURE_TENANT_ID=${AZURE_TENANT_ID}
 AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
 AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+EOF
+  else
+    cat << EOF >> "${INSTALL_DIR}/.env"
+# AZURE_TENANT_ID=
+# AZURE_CLIENT_ID=
+# AZURE_CLIENT_SECRET=
+EOF
+  fi
 
-# ── Administrador inicial ─────────────────────────────────────────────────────
-ADMIN_USER=${ADMIN_USER}
-ADMIN_PASSWORD=${ADMIN_PASSWORD}
-ADMIN_EMAIL=${ADMIN_EMAIL}
+  cat << EOF >> "${INSTALL_DIR}/.env"
 
-# ── SMTP ──────────────────────────────────────────────────────────────────────
+# ── Configuração de SMTP (Envio de E-mails) ───────────────────────────────────
+EOF
+
+  if [ "$SETUP_SMTP" = "y" ]; then
+    cat << EOF >> "${INSTALL_DIR}/.env"
 SMTP_HOST=${SMTP_HOST}
 SMTP_PORT=${SMTP_PORT}
 SMTP_SECURE=${SMTP_SECURE}
 SMTP_USER=${SMTP_USER}
 SMTP_PASS=${SMTP_PASS}
 SMTP_FROM=${SMTP_FROM}
+EOF
+  else
+    cat << EOF >> "${INSTALL_DIR}/.env"
+# SMTP_HOST=
+# SMTP_PORT=587
+# SMTP_SECURE=true
+# SMTP_USER=
+# SMTP_PASS=
+# SMTP_FROM=
+EOF
+  fi
 
-# ── Microsoft Teams ───────────────────────────────────────────────────────────
-TEAMS_WEBHOOK_URL=${TEAMS_WEBHOOK_URL}
+  cat << EOF >> "${INSTALL_DIR}/.env"
 
-# ── Integrações externas (configurar após instalação) ─────────────────────────
-GLPI_URL=
-GLPI_APP_TOKEN=
-GLPI_USER_TOKEN=
-
-# ── Comportamento da aplicação ────────────────────────────────────────────────
-LOG_LEVEL=info
-SESSION_TIMEOUT_MINUTES=60
-MAX_LOGIN_ATTEMPTS=5
-PASSWORD_MIN_LENGTH=12
-INACTIVE_USER_THRESHOLD_DAYS=90
-PASSWORD_EXPIRY_ALERT_DAYS=14
-LICENSE_ALERT_THRESHOLD=85
-AUDIT_RETENTION_DAYS=365
+# ── Integração Microsoft Teams (Webhooks) ─────────────────────────────────────
 EOF
 
-  chmod 600 "${INSTALL_DIR}/.env"
-  chown "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}/.env"
-  ok ".env gerado com permissão 600"
+  if [ "$SETUP_TEAMS" = "y" ]; then
+    cat << EOF >> "${INSTALL_DIR}/.env"
+TEAMS_WEBHOOK_URL=${TEAMS_WEBHOOK_URL}
+EOF
+  else
+    cat << EOF >> "${INSTALL_DIR}/.env"
+# TEAMS_WEBHOOK_URL=
+EOF
+  fi
 
-  local BAK="${INSTALL_DIR}/.env.backup-$(date +%Y%m%d-%H%M%S)"
-  cp "${INSTALL_DIR}/.env" "$BAK"
-  chmod 600 "$BAK"
-  chown "${SERVICE_USER}:${SERVICE_USER}" "$BAK"
-  ok "Backup salvo em: $(basename "$BAK")"
+  cat << EOF >> "${INSTALL_DIR}/.env"
+
+# ── GLPI (Opcional) ───────────────────────────────────────────────────────────
+# GLPI_URL=https://glpi.empresa.com.br/apirest.php
+# GLPI_APP_TOKEN=
+# GLPI_USER_TOKEN=
+
+# ── Configurações do Frontend ─────────────────────────────────────────────────
+VITE_APP_NAME="AD License Manager"
+VITE_APP_VERSION=${INSTALLER_VERSION}
+EOF
+
+  q chmod 600 "${INSTALL_DIR}/.env"
+  q chown "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}/.env"
+  ok "Arquivo .env criado e protegido"
+
+  sub "Criando docker-compose.yml..."
+  cat << EOF > "${INSTALL_DIR}/docker-compose.yml"
+# ════════════════════════════════════════════════════════════════════════════
+#  AD License Manager — Docker Compose
+#  Gerado pelo instalador v${INSTALLER_VERSION} em $(date '+%Y-%m-%d %H:%M:%S')
+# ════════════════════════════════════════════════════════════════════════════
+version: '3.8'
+
+services:
+  nginx:
+    container_name: admanager_nginx
+    image: nginx:stable-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./infra/nginx/ssl:/etc/nginx/ssl:ro
+      - ./frontend/dist:/usr/share/nginx/html:ro
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - admanager_external
+      - admanager_internal
+
+  frontend:
+    container_name: admanager_frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NODE_ENV: production
+    restart: unless-stopped
+    environment:
+      - VITE_APP_NAME=\${VITE_APP_NAME}
+      - VITE_APP_VERSION=\${VITE_APP_VERSION}
+      - VITE_API_URL=\${APP_URL}/api
+      - VITE_WS_URL=\${APP_URL}/ws
+    networks:
+      - admanager_internal
+
+  backend:
+    container_name: admanager_backend
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        NODE_ENV: production
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      - DATABASE_URL=\${DATABASE_URL}
+      - REDIS_URL=\${REDIS_URL}
+      - JWT_SECRET=\${JWT_SECRET}
+      - JWT_REFRESH_SECRET=\${JWT_REFRESH_SECRET}
+      - ENCRYPTION_KEY=\${ENCRYPTION_KEY}
+      - AD_URL=\${AD_URL}
+      - AD_BASE_DN=\${AD_BASE_DN}
+      - AD_USERNAME=\${AD_USERNAME}
+      - AD_PASSWORD=\${AD_PASSWORD}
+      - AD_DOMAIN=\${AD_DOMAIN}
+      - AZURE_TENANT_ID=\${AZURE_TENANT_ID}
+      - AZURE_CLIENT_ID=\${AZURE_CLIENT_ID}
+      - AZURE_CLIENT_SECRET=\${AZURE_CLIENT_SECRET}
+      - SMTP_HOST=\${SMTP_HOST}
+      - SMTP_PORT=\${SMTP_PORT}
+      - SMTP_SECURE=\${SMTP_SECURE}
+      - SMTP_USER=\${SMTP_USER}
+      - SMTP_PASS=\${SMTP_PASS}
+      - SMTP_FROM=\${SMTP_FROM}
+      - TEAMS_WEBHOOK_URL=\${TEAMS_WEBHOOK_URL}
+      - GLPI_URL=\${GLPI_URL}
+      - GLPI_APP_TOKEN=\${GLPI_APP_TOKEN}
+      - GLPI_USER_TOKEN=\${GLPI_USER_TOKEN}
+      - PORT=3001
+      - TZ=\${TZ}
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - admanager_internal
+
+  worker:
+    container_name: admanager_worker
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        NODE_ENV: production
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      - DATABASE_URL=\${DATABASE_URL}
+      - REDIS_URL=\${REDIS_URL}
+      - JWT_SECRET=\${JWT_SECRET}
+      - JWT_REFRESH_SECRET=\${JWT_REFRESH_SECRET}
+      - ENCRYPTION_KEY=\${ENCRYPTION_KEY}
+      - AD_URL=\${AD_URL}
+      - AD_BASE_DN=\${AD_BASE_DN}
+      - AD_USERNAME=\${AD_USERNAME}
+      - AD_PASSWORD=\${AD_PASSWORD}
+      - AD_DOMAIN=\${AD_DOMAIN}
+      - AZURE_TENANT_ID=\${AZURE_TENANT_ID}
+      - AZURE_CLIENT_ID=\${AZURE_CLIENT_ID}
+      - AZURE_CLIENT_SECRET=\${AZURE_CLIENT_SECRET}
+      - SMTP_HOST=\${SMTP_HOST}
+      - SMTP_PORT=\${SMTP_PORT}
+      - SMTP_SECURE=\${SMTP_SECURE}
+      - SMTP_USER=\${SMTP_USER}
+      - SMTP_PASS=\${SMTP_PASS}
+      - SMTP_FROM=\${SMTP_FROM}
+      - TEAMS_WEBHOOK_URL=\${TEAMS_WEBHOOK_URL}
+      - GLPI_URL=\${GLPI_URL}
+      - GLPI_APP_TOKEN=\${GLPI_APP_TOKEN}
+      - GLPI_USER_TOKEN=\${GLPI_USER_TOKEN}
+      - PORT=3002 # Porta interna para o worker, nao exposta
+      - TZ=\${TZ}
+    command: node dist/worker.js
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - admanager_internal
+
+  postgres:
+    container_name: admanager_postgres
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: admanager
+      POSTGRES_USER: admanager
+      POSTGRES_PASSWORD: \${DB_PASSWORD}
+    volumes:
+      - admanager_db_data:/var/lib/postgresql/data
+    networks:
+      - admanager_internal
+
+  redis:
+    container_name: admanager_redis
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --requirepass \${REDIS_PASSWORD} --appendonly yes
+    volumes:
+      - admanager_redis_data:/data
+    networks:
+      - admanager_internal
+
+volumes:
+  admanager_db_data:
+  admanager_redis_data:
+
+networks:
+  admanager_external:
+    driver: bridge
+  admanager_internal:
+    driver: bridge
+    internal: true
+EOF
+  ok "docker-compose.yml criado"
+
+  sub "Criando arquivos de configuração do Nginx..."
+  q mkdir -p "${INSTALL_DIR}/infra/nginx/conf.d" "${INSTALL_DIR}/infra/nginx/ssl"
+
+  cat << EOF > "${INSTALL_DIR}/infra/nginx/nginx.conf"
+user nginx;
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /var/run/nginx.pid;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    log_format main '\$remote_addr - \$remote_user [\$time_local] "\$request" '
+                    '\$status \$body_bytes_sent "\$http_referer" '
+                    '"\$http_user_agent" "\$http_x_forwarded_for"';
+
+    access_log /var/log/nginx/access.log main;
+
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
+
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_buffers 16 8k;
+    gzip_http_version 1.1;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
+
+    include /etc/nginx/conf.d/*.conf;
+}
+EOF
+
+  cat << EOF > "${INSTALL_DIR}/infra/nginx/conf.d/default.conf"
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${APP_DOMAIN};
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${APP_DOMAIN};
+
+    ssl_certificate /etc/nginx/ssl/cert.pem;
+    ssl_certificate_key /etc/nginx/ssl/key.pem;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384";
+    ssl_prefer_server_ciphers on;
+
+    # HSTS (15768000 seconds = 6 months)
+    add_header Strict-Transport-Security "max-age=15768000; includeSubDomains" always;
+
+    # OCSP stapling
+    ssl_stapling on;
+    ssl_stapling_verify on;
+    ssl_trusted_certificate /etc/nginx/ssl/cert.pem;
+    resolver 8.8.8.8 8.8.4.4 valid=300s;
+    resolver_timeout 5s;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location / {
+        try_files \$uri \$uri/ /index.html;
+    }
+
+    location /api/ {
+        proxy_pass http://backend:3001/;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_redirect off;
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        client_max_body_size 10M; # Aumentado para upload de fotos
+    }
+
+    location /ws/ {
+        proxy_pass http://backend:3001/ws/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 86400; # 24 horas para WebSockets
+    }
+
+    # Bloqueia acesso a arquivos de configuracao
+    location ~ /\.env { deny all; }
+    location ~ /\.git { deny all; }
+}
+EOF
+  ok "Arquivos de configuração do Nginx criados"
 }
 
 # =============================================================================
 #  ETAPA 7 — CERTIFICADO TLS
 # =============================================================================
 step_7_tls() {
-  step "7" "CONFIGURAÇÃO DO CERTIFICADO TLS"
+  step "7" "CONFIGURAÇÃO DE CERTIFICADO TLS"
 
   local SSL_DIR="${INSTALL_DIR}/infra/nginx/ssl"
 
-  # ── Let's Encrypt ──────────────────────────────────────────────────────────
+  # ── Let's Encrypt (opção 1) ──────────────────────────────────────────────
   if [ "$CERT_OPCAO" = "1" ]; then
-    sub "Instalando Certbot..."
-    q apt-get install -y -qq certbot
-    ok "Certbot instalado"
-
-    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "nginx"; then
-      q docker compose -f "${INSTALL_DIR}/docker-compose.yml" stop nginx
-    fi
-
-    sub "Gerando certificado Let's Encrypt para ${APP_DOMAIN}..."
-    if certbot certonly \
-        --standalone --non-interactive --agree-tos \
-        --email "$ADMIN_EMAIL" -d "$APP_DOMAIN" \
-        >> "$INSTALL_LOG" 2>&1; then
-
+    sub "Configurando Let's Encrypt..."
+    q apt-get install -y certbot
+    q docker compose stop nginx # Libera porta 80/443
+    if q certbot certonly \
+      --standalone \
+      --non-interactive \
+      --agree-tos \
+      --email "$ADMIN_EMAIL" \
+      -d "$APP_DOMAIN"; then
       cp "/etc/letsencrypt/live/${APP_DOMAIN}/fullchain.pem" "${SSL_DIR}/cert.pem"
       cp "/etc/letsencrypt/live/${APP_DOMAIN}/privkey.pem"   "${SSL_DIR}/key.pem"
       ok "Certificado Let's Encrypt gerado"
 
+      sub "Configurando renovação automática do Let's Encrypt..."
       cat > /usr/local/bin/admanager-renew-cert.sh << EOF
-#!/bin/bash
-set -e
-DOMAIN="${APP_DOMAIN}"
+#!/usr/bin/env bash
+set -euo pipefail
+INSTALL_DIR="${INSTALL_DIR}"
 SSL_DIR="${SSL_DIR}"
+DOMAIN="${APP_DOMAIN}"
 LOG="${INSTALL_DIR}/logs/certbot.log"
-
-certbot renew --quiet
+echo "\$(date '+%Y-%m-%d %H:%M:%S') Iniciando renovação de certificado." >> "\$LOG"
+certbot renew --quiet >> "\$LOG" 2>&1
 cp /etc/letsencrypt/live/\${DOMAIN}/fullchain.pem \${SSL_DIR}/cert.pem
 cp /etc/letsencrypt/live/\${DOMAIN}/privkey.pem   \${SSL_DIR}/key.pem
 chown ${SERVICE_USER}:${SERVICE_USER} \${SSL_DIR}/cert.pem \${SSL_DIR}/key.pem
 chmod 644 \${SSL_DIR}/cert.pem
 chmod 600 \${SSL_DIR}/key.pem
-docker compose -f "${INSTALL_DIR}/docker-compose.yml" restart nginx
-echo "\$(date '+%Y-%m-%d %H:%M:%S') Certificado renovado com sucesso." >> "\$LOG"
+docker compose -f ${INSTALL_DIR}/docker-compose.yml restart nginx >> "\$LOG" 2>&1
+echo "\$(date '+%Y-%m-%d %H:%M:%S') Renovação concluída." >> "\$LOG"
 EOF
       chmod +x /usr/local/bin/admanager-renew-cert.sh
       cat > /etc/cron.d/admanager-certbot << 'EOF'
@@ -1223,7 +1320,7 @@ log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG"; }
 log "=== Backup iniciado ==="
 mkdir -p "$BACKUP_DIR"
 
-REDIS_PASSWORD=$(grep '^REDIS_PASSWORD=' "${INSTALL_DIR}/.env" | cut -d= -f2- | tr -d '"'"'" ')
+REDIS_PASSWORD=$(grep '^REDIS_PASSWORD=' "${INSTALL_DIR}/.env" | cut -d= -f2- | tr -d "\"'")
 
 log "Dump do PostgreSQL..."
 docker compose -f "${INSTALL_DIR}/docker-compose.yml" \
@@ -1261,7 +1358,7 @@ LOG="${INSTALL_DIR}/logs/health.log"
 FALHAS=0
 
 REDIS_PASSWORD=$(grep '^REDIS_PASSWORD=' "${INSTALL_DIR}/.env" 2>/dev/null \
-  | cut -d= -f2- | tr -d '"'"'" ' || echo "")
+  | cut -d= -f2- | tr -d "\"'")
 
 check() {
   local label="$1" cmd="$2" match="${3:-.}"
@@ -1346,4 +1443,241 @@ echo "=== Atualização concluída com sucesso ==="
 UPDATE_SCRIPT
   ok "update.sh criado"
 
-  # ── restore.sh ─────────────────────────
+  # ── restore.sh ─────────────────────────────────────────────────────────────
+  sub "Criando scripts/restore.sh..."
+  cat > "${INSTALL_DIR}/scripts/restore.sh" << 'RESTORE_SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+INSTALL_DIR="/opt/ad-license-manager"
+
+usage() {
+  echo ""
+  echo "  Uso: sudo bash restore.sh [DATA]"
+  echo "       DATA formato: YYYY-MM-DD"
+  echo ""
+  echo "  Backups disponíveis:"
+  ls -d "${INSTALL_DIR}/backups/"*/ 2>/dev/null \
+    | xargs -I{} basename {} \
+    || echo "  Nenhum backup encontrado."
+  echo ""
+  exit 1
+}
+
+DATE="${1:-}"
+[ -z "$DATE" ] && { echo "Informe a data do backup."; usage; }
+
+BACKUP_DIR="${INSTALL_DIR}/backups/${DATE}"
+[ -d "$BACKUP_DIR"              ] || { echo "Backup não encontrado: ${BACKUP_DIR}"; usage; }
+[ -f "${BACKUP_DIR}/database.dump" ] || { echo "Arquivo de banco não encontrado em: ${BACKUP_DIR}"; exit 1; }
+
+echo ""
+echo "=== Restauração — backup de ${DATE} ==="
+echo ""
+echo "ATENÇÃO: Esta operação substituirá os dados atuais pelo backup de ${DATE}."
+echo ""
+read -rp "  Confirme digitando 'RESTAURAR': " CONFIRM
+[ "$CONFIRM" = "RESTAURAR" ] || { echo "Cancelado."; exit 0; }
+
+echo ""
+echo "Parando serviços dependentes..."
+cd "${INSTALL_DIR}"
+docker compose stop backend worker
+
+echo "Restaurando banco de dados..."
+docker compose exec -T postgres pg_restore \
+  --username admanager \
+  --dbname   admanager \
+  --clean    \
+  --if-exists \
+  < "${BACKUP_DIR}/database.dump"
+
+echo "Reiniciando serviços..."
+docker compose start backend worker
+
+echo ""
+echo "Aguardando inicialização (10s)..."
+sleep 10
+
+echo ""
+echo "Verificando integridade após restauração..."
+bash "${INSTALL_DIR}/scripts/health-check.sh"
+
+echo ""
+echo "=== Restauração concluída. Dados de ${DATE} restaurados. ==="
+RESTORE_SCRIPT
+  ok "restore.sh criado"
+
+  # ── Permissões finais dos scripts ──────────────────────────────────────────
+  chmod +x  "${INSTALL_DIR}/scripts/"*.sh
+  chown "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}/scripts/"*.sh
+  ok "Permissões dos scripts configuradas"
+}
+
+# =============================================================================
+#  ETAPA 12 — CRON JOBS
+# =============================================================================
+step_12_cron() {
+  step "12" "CONFIGURAÇÃO DE CRON JOBS AUTOMÁTICOS"
+
+  cat > /etc/cron.d/admanager << EOF
+# ══════════════════════════════════════════════════════════════════════
+#  AD License Manager — Tarefas automáticas
+#  Gerado em: $(date '+%Y-%m-%d %H:%M:%S')
+# ══════════════════════════════════════════════════════════════════════
+
+# Backup diário às 03:00
+0 3 * * * ${SERVICE_USER} ${INSTALL_DIR}/scripts/backup.sh >> ${INSTALL_DIR}/logs/backup.log 2>&1
+
+# Health check a cada 5 minutos
+*/5 * * * * ${SERVICE_USER} ${INSTALL_DIR}/scripts/health-check.sh >> ${INSTALL_DIR}/logs/health.log 2>&1
+
+# Limpeza de logs da aplicacao (a cada 6 horas)
+0 */6 * * * ${SERVICE_USER} find ${INSTALL_DIR}/logs -type f -name "*.log" -mtime +7 -delete >> ${INSTALL_DIR}/logs/cleanup.log 2>&1
+
+# Limpeza de logs do Docker (a cada 24 horas)
+0 0 * * * root docker system prune -f --volumes >> ${INSTALL_DIR}/logs/docker-prune.log 2>&1
+
+EOF
+  ok "Cron jobs configurados"
+}
+
+# =============================================================================
+#  ETAPA 13 — PERMISSÕES FINAIS E AUDITORIA
+# =============================================================================
+step_13_final_permissions() {
+  step "13" "PERMISSÕES FINAIS E AUDITORIA"
+
+  sub "Aplicando permissões restritivas na instalação..."
+  q chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}"
+  q chmod -R u=rwX,g=rX,o= "${INSTALL_DIR}"
+  q chmod 600 "${INSTALL_DIR}/.env"
+  q chmod 600 "${INSTALL_DIR}/infra/nginx/ssl/key.pem"
+  q chmod 700 "${INSTALL_DIR}/logs"
+  q chmod 700 "${INSTALL_DIR}/backups"
+  ok "Permissões aplicadas"
+
+  sub "Verificando regras de auditoria do auditd..."
+  if q auditctl -l | grep -q "admanager-config"; then
+    ok "Regras de auditoria do auditd ativas"
+  else
+    warn "Regras de auditoria do auditd não ativas. Reiniciando auditd."
+    q systemctl restart auditd
+    if q auditctl -l | grep -q "admanager-config"; then
+      ok "Regras de auditoria do auditd ativas após reinício"
+    else
+      warn "Falha ao ativar regras de auditoria do auditd. Verifique /etc/audit/rules.d/admanager.rules"
+    fi
+  fi
+}
+
+# =============================================================================
+#  ETAPA 14 — VERIFICAÇÃO FINAL E RESUMO
+# =============================================================================
+step_14_final_check() {
+  step "14" "VERIFICAÇÃO FINAL E RESUMO"
+
+  cd "${INSTALL_DIR}"
+
+  sub "Status dos containers:"
+  echo ""
+  docker compose ps 2>/dev/null | while IFS= read -r l; do echo "    ${l}"; done
+  echo ""
+
+  sub "Executando health check completo..."
+  echo ""
+  bash "${INSTALL_DIR}/scripts/health-check.sh" || true
+  echo ""
+
+  sub "Verificando certificado TLS..."
+  local CERT_INFO
+  CERT_INFO=$(openssl x509 -in "${INSTALL_DIR}/infra/nginx/ssl/cert.pem" \
+    -noout -subject -dates 2>/dev/null || echo "erro")
+  if echo "$CERT_INFO" | grep -q "notAfter"; then
+    local EXPIRA
+    EXPIRA=$(echo "$CERT_INFO" | grep notAfter | cut -d= -f2)
+    ok "Certificado TLS válido — expira em: ${EXPIRA}"
+  else
+    warn "Não foi possível verificar o certificado TLS."
+  fi
+
+  sub "Testando acesso HTTPS..."
+  if curl -skf "https://${APP_DOMAIN}/health" > /dev/null 2>&1; then
+    ok "Acesso HTTPS ao sistema OK."
+  else
+    warn "Não foi possível acessar https://${APP_DOMAIN}/health."
+    warn "Verifique o DNS, firewall e logs do Nginx (docker compose logs nginx)."
+  fi
+
+  local INSTALL_END
+  INSTALL_END=$(date +%s)
+  local DURACAO
+  DURACAO=$(( (INSTALL_END - INSTALL_START) / 60 ))
+
+  banner
+  echo -e "${GREEN}${BOLD}"
+  echo "  ╔══════════════════════════════════════════════════════════════════════╗"
+  echo "  ║                                                                      ║"
+  echo "  ║           ✓  INSTALAÇÃO CONCLUÍDA COM SUCESSO!                      ║"
+  echo "  ║                                                                      ║"
+  echo "  ╚══════════════════════════════════════════════════════════════════════╝"
+  echo -e "${NC}"
+  echo -e "  ${DIM}Tempo total: ${DURACAO} minutos${NC}"
+  echo ""
+
+  div
+  echo -e "  ${WHITE}${BOLD}ACESSO AO SISTEMA${NC}"
+  div
+  echo ""
+  echo -e "  ${CYAN}URL:${NC}      ${WHITE}${BOLD}https://${APP_DOMAIN}${NC}"
+  echo -e "  ${CYAN}Usuário:${NC}  ${WHITE}${BOLD}${ADMIN_USER}${NC}"
+  echo -e "  ${CYAN}Senha:${NC}    ${WHITE}${BOLD}Será solicitada no primeiro login.${NC}"
+  echo ""
+
+  div
+  echo -e "  ${WHITE}${BOLD}PRÓXIMOS PASSOS${NC}"
+  div
+  echo ""
+  echo -e "  1.  Acesse a URL acima e faça login com o usuário '${ADMIN_USER}'."
+  echo -e "  2.  Altere a senha do administrador no primeiro acesso."
+  echo -e "  3.  Configure o registro DNS para '${APP_DOMAIN}' apontando para o IP '${SERVER_IP}'."
+  echo -e "  4.  Consulte o manual para as configurações pós-instalação."
+  echo ""
+
+  div
+  echo -e "  ${WHITE}${BOLD}COMANDOS ÚTEIS${NC}"
+  div
+  echo ""
+  echo -e "  ${DIM}Acesse o diretório de instalação:${NC} cd ${INSTALL_DIR}"
+  echo -e "  ${DIM}Verificar status:${NC} docker compose ps"
+  echo -e "  ${DIM}Verificar saúde:${NC} bash scripts/health-check.sh"
+  echo -e "  ${DIM}Ver logs em tempo real:${NC} docker compose logs -f"
+  echo -e "  ${DIM}Atualizar o sistema:${NC} sudo bash scripts/update.sh"
+  echo -e "  ${DIM}Fazer backup manual:${NC} sudo bash scripts/backup.sh"
+  echo ""
+
+  echo -e "  ${DIM}Log completo da instalação: ${INSTALL_LOG}${NC}"
+  echo ""
+}
+
+# =============================================================================
+#  FLUXO PRINCIPAL
+# =============================================================================
+main() {
+  step_0_verify
+  step_1_collect
+  step_2_prepare_system
+  step_3_security
+  step_4_docker
+  step_5_download_code
+  step_6_generate_env
+  step_7_tls
+  step_8_build
+  step_9_start
+  step_10_systemd
+  step_11_scripts
+  step_12_cron
+  step_13_final_permissions
+  step_14_final_check
+}
+
+main "$@"
