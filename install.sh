@@ -66,6 +66,7 @@ _trim() {
   echo "$v"
 }
 
+# ANTES — captura tudo incluindo o eco do prompt
 ask() {
   local label="$1" default="${2:-}"
   if [ -n "$default" ]; then
@@ -73,8 +74,34 @@ ask() {
   else
     echo -ne "  ${MAGENTA}?${NC}  ${WHITE}${label}${NC}: "
   fi
-  local val; read -r val
-  val=$(_trim "$val"); echo "${val:-$default}"
+  local val
+  read -r val
+  val=$(_trim "$val")
+  echo "${val:-$default}"
+}
+
+# DEPOIS — descarta o eco do prompt, mantém só o que o usuário digitou
+ask() {
+  local label="$1" default="${2:-}"
+  if [ -n "$default" ]; then
+    echo -ne "  ${MAGENTA}?${NC}  ${WHITE}${label}${NC} ${DIM}[${default}]${NC}: "
+  else
+    echo -ne "  ${MAGENTA}?${NC}  ${WHITE}${label}${NC}: "
+  fi
+  local val
+  read -r val
+  val=$(_trim "$val")
+
+  # Corrige local echo de clientes SSH Windows (PuTTY, Windows Terminal, etc.)
+  # O terminal reenvia o prompt junto com a resposta. Ex:
+  #   "  ?  Domínio [...]: admanager.grupoprimavera.com.br"
+  # Descarta tudo até (e incluindo) o último ": " para ficar só com a resposta.
+  if [[ "$val" == *": "* ]]; then
+    val="${val##*: }"
+  fi
+
+  val=$(_trim "$val")
+  echo "${val:-$default}"
 }
 
 ask_secret() {
