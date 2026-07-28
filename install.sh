@@ -58,6 +58,7 @@ fail() {
   echo ""; exit 1
 }
 
+# ─── Leitura — remove \r, espaços e eco local do SSH Windows ─────────────────
 _trim() {
   local v="$1"
   v="${v//$'\r'/}"
@@ -66,21 +67,6 @@ _trim() {
   echo "$v"
 }
 
-# ANTES — captura tudo incluindo o eco do prompt
-ask() {
-  local label="$1" default="${2:-}"
-  if [ -n "$default" ]; then
-    echo -ne "  ${MAGENTA}?${NC}  ${WHITE}${label}${NC} ${DIM}[${default}]${NC}: "
-  else
-    echo -ne "  ${MAGENTA}?${NC}  ${WHITE}${label}${NC}: "
-  fi
-  local val
-  read -r val
-  val=$(_trim "$val")
-  echo "${val:-$default}"
-}
-
-# DEPOIS — descarta o eco do prompt, mantém só o que o usuário digitou
 ask() {
   local label="$1" default="${2:-}"
   if [ -n "$default" ]; then
@@ -92,11 +78,22 @@ ask() {
   read -r val
   val=$(_trim "$val")
 
-  # Corrige local echo de clientes SSH Windows (PuTTY, Windows Terminal, etc.)
-  # O terminal reenvia o prompt junto com a resposta. Ex:
-  #   "  ?  Domínio [...]: admanager.grupoprimavera.com.br"
-  # Descarta tudo até (e incluindo) o último ": " para ficar só com a resposta.
-  if [[ "$val" == *": "* ]]; then
+  # ── Corrige local echo de clientes SSH Windows ──────────────────────────────
+  # PuTTY, Windows Terminal e OpenSSH for Windows podem reenviar a linha inteira
+  # visível como input. Ex: "  ?  Domínio [default]: valor_digitado"
+  # O prompt sempre termina com "]: " (quando há default) ou ": " (sem default).
+  # Extraímos apenas o que está APÓS o último separador do prompt.
+  #
+  # Casos tratados:
+  #   Com default → "  ?  Pergunta [default]: resposta"  → extrai "resposta"
+  #   Sem default → "  ?  Pergunta: resposta"            → extrai "resposta"
+  #   Sem echo    → "resposta"                           → mantém "resposta"
+  #
+  if [[ "$val" == *"]: "* ]]; then
+    # Prompt com default — remove tudo até e incluindo o último "]: "
+    val="${val##*]: }"
+  elif [[ "$val" == *": "* && "$val" != *"://"* ]]; then
+    # Prompt sem default e sem URL (ldap://, https://) — remove até o último ": "
     val="${val##*: }"
   fi
 
