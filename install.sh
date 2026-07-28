@@ -58,15 +58,19 @@ fail() {
   echo ""; exit 1
 }
 
-# ─── Leitura — remove \r, espaços e eco local do SSH Windows ─────────────────
+# ─── _trim — remove \r, espaços e códigos ANSI ───────────────────────────────
 _trim() {
   local v="$1"
   v="${v//$'\r'/}"
+  # Remove códigos ANSI de cor (ex: \033[0m \033[1;37m \033[2m)
+  # que o SSH Windows ecoa de volta junto com o prompt
+  v=$(printf '%s' "$v" | sed 's/\x1b|$$[0-9;]*[mK]//g' 2>/dev/null || printf '%s' "$v")
   v="${v#"${v%%[![:space:]]*}"}"
   v="${v%"${v##*[![:space:]]}"}"
   echo "$v"
 }
 
+# ─── ask — lê entrada do usuário ─────────────────────────────────────────────
 ask() {
   local label="$1" default="${2:-}"
   if [ -n "$default" ]; then
@@ -76,25 +80,23 @@ ask() {
   fi
   local val
   read -r val
+
+  # _trim já removeu os ANSI codes, então agora o padrão ]: casa corretamente
+  # Ex antes do trim:  "  ?  Domínio \033[2m[default]\033[0m: valor"
+  # Ex depois do trim: "  ?  Domínio [default]: valor"
   val=$(_trim "$val")
 
-  # ── Corrige local echo de clientes SSH Windows ──────────────────────────────
-  # PuTTY, Windows Terminal e OpenSSH for Windows podem reenviar a linha inteira
-  # visível como input. Ex: "  ?  Domínio [default]: valor_digitado"
-  # O prompt sempre termina com "]: " (quando há default) ou ": " (sem default).
-  # Extraímos apenas o que está APÓS o último separador do prompt.
-  #
-  # Casos tratados:
-  #   Com default → "  ?  Pergunta [default]: resposta"  → extrai "resposta"
-  #   Sem default → "  ?  Pergunta: resposta"            → extrai "resposta"
-  #   Sem echo    → "resposta"                           → mantém "resposta"
-  #
+  # Extrai apenas a resposta do usuário descartando o eco do prompt
   if [[ "$val" == *"]: "* ]]; then
-    # Prompt com default — remove tudo até e incluindo o último "]: "
+    # Prompt com default → "Pergunta [default]: resposta" → extrai "resposta"
     val="${val##*]: }"
-  elif [[ "$val" == *": "* && "$val" != *"://"* ]]; then
-    # Prompt sem default e sem URL (ldap://, https://) — remove até o último ": "
-    val="${val##*: }"
+  elif [[ "$val" == *": "* ]]; then
+    # Prompt sem default → "Pergunta: resposta" → extrai "resposta"
+    # Guarda URLs: só aplica se não houver "://" (ldaps://, https://, etc.)
+    local after_colon="${val##*: }"
+    if [[ "$after_colon" != "//"* ]]; then
+      val="$after_colon"
+    fi
   fi
 
   val=$(_trim "$val")
