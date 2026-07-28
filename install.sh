@@ -58,65 +58,86 @@ fail() {
   echo ""; exit 1
 }
 
-# ─── _trim — remove \r, espaços e códigos ANSI ───────────────────────────────
+# ─── Substitui Unicode por ASCII puro ────────────────────────────────────────
+div() {
+  echo "  ----------------------------------------------------------"
+}
+
+# ─── _trim — remove \r, espaços, caracteres de controle ──────────────────────
 _trim() {
   local v="$1"
+  # Remove \r (Windows CRLF)
   v="${v//$'\r'/}"
-  # Remove códigos ANSI de cor (ex: \033[0m \033[1;37m \033[2m)
-  # que o SSH Windows ecoa de volta junto com o prompt
-  v=$(printf '%s' "$v" | sed 's/\x1b|$$[0-9;]*[mK]//g' 2>/dev/null || printf '%s' "$v")
+  # Remove todos os caracteres de controle e escape ANSI
+  # que o PuTTY pode injetar no buffer de entrada
+  v=$(printf '%s' "$v" | tr -cd '[:print:]')
+  # Remove espaços nas bordas
   v="${v#"${v%%[![:space:]]*}"}"
   v="${v%"${v##*[![:space:]]}"}"
   echo "$v"
 }
 
-# ─── ask — lê entrada do usuário ─────────────────────────────────────────────
+# ─── ask — lê entrada diretamente do terminal, ignora eco do SSH ──────────────
 ask() {
-  local label="$1" default="${2:-}"
-  if [ -n "$default" ]; then
-    echo -ne "  ${MAGENTA}?${NC}  ${WHITE}${label}${NC} ${DIM}[${default}]${NC}: "
-  else
-    echo -ne "  ${MAGENTA}?${NC}  ${WHITE}${label}${NC}: "
-  fi
+  local label="$1"
+  local default="${2:-}"
   local val
-  read -r val
 
-  # _trim já removeu os ANSI codes, então agora o padrão ]: casa corretamente
-  # Ex antes do trim:  "  ?  Domínio \033[2m[default]\033[0m: valor"
-  # Ex depois do trim: "  ?  Domínio [default]: valor"
-  val=$(_trim "$val")
-
-  # Extrai apenas a resposta do usuário descartando o eco do prompt
-  if [[ "$val" == *"]: "* ]]; then
-    # Prompt com default → "Pergunta [default]: resposta" → extrai "resposta"
-    val="${val##*]: }"
-  elif [[ "$val" == *": "* ]]; then
-    # Prompt sem default → "Pergunta: resposta" → extrai "resposta"
-    # Guarda URLs: só aplica se não houver "://" (ldaps://, https://, etc.)
-    local after_colon="${val##*: }"
-    if [[ "$after_colon" != "//"* ]]; then
-      val="$after_colon"
-    fi
+  # Escreve o prompt diretamente no terminal (não no stdout)
+  # Isso evita que o eco do SSH Windows capture o texto do prompt
+  if [ -n "$default" ]; then
+    printf "  ?  %s [%s]: " "$label" "$default" > /dev/tty
+  else
+    printf "  ?  %s: " "$label" > /dev/tty
   fi
 
+  # Lê diretamente do terminal, não do stdin
+  read -r val < /dev/tty
+
+  # Remove \r e caracteres indesejados
   val=$(_trim "$val")
+
+  # Se ainda vier o eco do prompt junto com a resposta (ex: "Pergunta [default]: valor")
+  # extrai apenas a parte após o último separador ": "
+  if [[ "$val" == *"]: "* ]]; then
+    val="${val##*]: }"
+  elif [[ "$val" == *": "* && "$val" != *"://"* ]]; then
+    val="${val##*: }"
+  fi
+
+  # Remove qualquer hífen ou espaço sobrando no início e fim
+  val="${val#-}"
+  val="${val%-}"
+  val=$(_trim "$val")
+
   echo "${val:-$default}"
 }
 
+# ─── ask_secret — igual ao ask mas sem exibir o que é digitado ───────────────
 ask_secret() {
-  echo -ne "  ${MAGENTA}?${NC}  ${WHITE}$1${NC}: "
-  local val; read -rs val; echo ""
-  val="${val//$'\r'/}"; echo "$val"
+  local val
+  printf "  ?  %s: " "$1" > /dev/tty
+  read -rs val < /dev/tty
+  echo "" > /dev/tty
+  val="${val//$'\r'/}"
+  echo "$val"
 }
 
+# ─── confirm — lê s/n diretamente do terminal ────────────────────────────────
 confirm() {
-  local label="$1" default="${2:-s}" hint
-  [ "$default" = "s" ] && hint="${GREEN}S${NC}/n" || hint="s/${GREEN}N${NC}"
-  echo -ne "  ${MAGENTA}?${NC}  ${WHITE}${label}${NC} [${hint}]: "
-  local val; read -r val
-  val=$(_trim "$val"); val="${val:-$default}"
+  local label="$1"
+  local default="${2:-s}"
+  local hint val
+
+  [ "$default" = "s" ] && hint="S/n" || hint="s/N"
+  printf "  ?  %s [%s]: " "$label" "$hint" > /dev/tty
+  read -r val < /dev/tty
+  val=$(_trim "$val")
+  val="${val:-$default}"
   [[ "$val" =~ ^[SsYy]$ ]]
 }
+
+
 
 pause() {
   echo ""
