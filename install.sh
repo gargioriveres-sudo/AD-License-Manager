@@ -1340,5 +1340,3 @@ step_14_summary() {
   echo ""
   div
   echo -e "  ${WHITE}${BOLD}ACESSO AO SISTEMA${NC}"
-
-
